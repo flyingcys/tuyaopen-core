@@ -49,7 +49,7 @@ static mqtt_bind_t *s_mqbind = NULL;
 void mqtt_bind_free(void)
 {
     if (s_mqbind) {
-        tal_free((void *)s_mqbind);
+        tal_free(s_mqbind);
         s_mqbind = NULL;
     }
 }
@@ -118,9 +118,12 @@ static void mqtt_bind_activate_token_on(tuya_protocol_event_t *ev)
     tuya_binding_info_t binding;
 
     memset(&binding, 0, sizeof(tuya_binding_info_t));
-    strcpy(binding.token, token);
-    strcpy(binding.region, region);
-    strcpy(binding.regist_key, regist_key);
+    strncpy(binding.token, token, sizeof(binding.token) - 1);
+    binding.token[sizeof(binding.token) - 1] = '\0';
+    strncpy(binding.region, region, sizeof(binding.region) - 1);
+    binding.region[sizeof(binding.region) - 1] = '\0';
+    strncpy(binding.regist_key, regist_key, sizeof(binding.regist_key) - 1);
+    binding.regist_key[sizeof(binding.regist_key) - 1] = '\0';
 
     tal_event_unsubscribe(EVENT_LINK_ACTIVATE, "mqbind", __mqbind_link_activete_cb);
     tal_event_publish(EVENT_LINK_ACTIVATE, &binding);
@@ -266,7 +269,7 @@ int mqtt_bind_token_get(tuya_iot_config_t *config)
     rt = tal_thread_create_and_start(&s_mqbind->thread, NULL, NULL, mqtt_bind_token_get_thread, s_mqbind, &thread_cfg);
     if (OPRT_OK != rt) {
         PR_ERR("tuya cli create thread failed %d", rt);
-        tal_free((void *)s_mqbind);
+        tal_free(s_mqbind);
         s_mqbind = NULL;
     }
 

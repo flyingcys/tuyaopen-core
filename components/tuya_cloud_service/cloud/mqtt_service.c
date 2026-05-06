@@ -58,20 +58,13 @@ static int tuya_mqtt_signature_tool(const tuya_meta_info_t *input, tuya_mqtt_acc
 
     if (input->devid && input->seckey && input->localkey) {
         // ACTIVED
-        memcpy((void *)signout->cipherkey, input->localkey, 16);
-        
-        int devid_len = strlen(input->devid);
-        if (devid_len > TUYA_MQTT_CLIENTID_MAXLEN) {
-            PR_ERR("Device ID too long: %d", devid_len);
-            return OPRT_INVALID_PARM;
-        }
-        
+        memcpy(signout->cipherkey, input->localkey, 16);
         snprintf(signout->clientid, sizeof(signout->clientid), "%s", input->devid);
         snprintf(signout->username, sizeof(signout->username), "%s", input->devid);
-        
         tal_md5_ret((const uint8_t *)input->seckey, strlen(input->seckey), digest);
         for (i = 0; i < 8; ++i) {
-            snprintf(&signout->password[i * 2], sizeof(signout->password) - i * 2, "%02x", (unsigned char)digest[i + 4]);
+            snprintf(&signout->password[i * 2], sizeof(signout->password) - (i * 2), "%02x",
+                     (unsigned char)digest[i + 4]);
         }
 
         // IO topic
@@ -80,26 +73,18 @@ static int tuya_mqtt_signature_tool(const tuya_meta_info_t *input, tuya_mqtt_acc
 
     } else if (input->uuid && input->authkey) {
         // UNACTIVED
-        memcpy((void *)signout->cipherkey, input->authkey, 16);
-        
-        int uuid_len = strlen(input->uuid);
-        if (uuid_len > TUYA_MQTT_CLIENTID_MAXLEN - 5) { // Account for "acon_" prefix
-            PR_ERR("UUID too long: %d", uuid_len);
-            return OPRT_INVALID_PARM;
-        }
-        
+        memcpy(signout->cipherkey, input->authkey, 16);
         snprintf(signout->clientid, sizeof(signout->clientid), "acon_%s", input->uuid);
         snprintf(signout->username, sizeof(signout->username), "acon_%s|pv=%s", input->uuid, TUYA_PV23);
-        
         tal_md5_ret((const uint8_t *)input->authkey, strlen(input->authkey), digest);
         for (i = 0; i < 8; ++i) {
-            snprintf(&signout->password[i * 2], sizeof(signout->password) - i * 2, "%02x", (unsigned char)digest[i + 4]);
+            snprintf(&signout->password[i * 2], sizeof(signout->password) - (i * 2), "%02x",
+                     (unsigned char)digest[i + 4]);
         }
 
         // IO topic
         snprintf(signout->topic_in, sizeof(signout->topic_in), "d/ai/%s", input->uuid);
-        snprintf(signout->topic_out, sizeof(signout->topic_out), "%s",
-                ""); // not support publish data on direct mode
+        signout->topic_out[0] = '\0'; // not support publish data on direct mode
 
     } else {
         PR_ERR("input error");
@@ -153,14 +138,12 @@ int tuya_mqtt_subscribe_message_callback_register(tuya_mqtt_context_t *context, 
     }
 
     newtarget->topic_length = strlen(topic);
-    newtarget->topic = tal_calloc(1, newtarget->topic_length + 1); // strdup
+    newtarget->topic = tal_calloc(1, newtarget->topic_length + 1);
     if (!newtarget->topic) {
-        PR_ERR("topic malloc error");
-        tal_free((void *)newtarget);
+        tal_free(newtarget);
         return OPRT_MALLOC_FAILED;
     }
-    strncpy(newtarget->topic, topic, newtarget->topic_length);
-    newtarget->topic[newtarget->topic_length] = '\0';
+    memcpy(newtarget->topic, topic, newtarget->topic_length);
 
     if (cb) {
         newtarget->cb = cb;
@@ -203,8 +186,8 @@ int tuya_mqtt_subscribe_message_callback_unregister(tuya_mqtt_context_t *context
         mqtt_subscribe_handle_t *entry = *target;
         if (entry->topic_length == topic_length && !memcmp(topic, entry->topic, topic_length)) {
             *target = entry->next;
-            tal_free((void *)entry->topic);
-            tal_free((void *)entry);
+            tal_free(entry->topic);
+            tal_free(entry);
         } else {
             target = &entry->next;
         }
@@ -256,7 +239,7 @@ static int tuya_protocol_message_parse_process(tuya_mqtt_context_t *context, con
     cJSON *root = NULL;
     cJSON *json = NULL;
     root = cJSON_Parse((const char *)jsonstr);
-    tal_free((void *)jsonstr);
+    tal_free(jsonstr);
     if (NULL == root) {
         PR_ERR("JSON parse error");
         return OPRT_CJSON_PARSE_ERR;
@@ -367,8 +350,8 @@ static void mqtt_client_puback_cb(void *client, uint16_t msgid, void *userdata)
         if (msgid == entry->msgid) {
             entry->cb(OPRT_OK, entry->user_data);
             *next_handle = entry->next;
-            tal_free((void *)entry->payload);
-            tal_free((void *)entry);
+            tal_free(entry->payload);
+            tal_free(entry);
             break;
         }
     }
@@ -472,11 +455,6 @@ int tuya_mqtt_start(tuya_mqtt_context_t *context)
         return OPRT_INVALID_PARM;
     }
 
-    PR_INFO("clientid:%s", context->signature.clientid);
-    PR_INFO("username:%s", context->signature.username);
-    PR_DEBUG("password:%s", context->signature.password);
-    PR_INFO("topic_in:%s", context->signature.topic_in);
-    PR_INFO("topic_out:%s", context->signature.topic_out);
     PR_INFO("tuya_mqtt_start...");
     context->manual_disconnect = false;
 
@@ -604,7 +582,7 @@ int tuya_mqtt_protocol_unregister(tuya_mqtt_context_t *context, uint16_t protoco
         tuya_protocol_handle_t *entry = *target;
         if (entry->id == protocol_id && entry->cb == cb) {
             *target = entry->next;
-            tal_free((void *)entry);
+            tal_free(entry);
         } else {
             target = &entry->next;
         }
@@ -636,7 +614,7 @@ int tuya_mqtt_protocol_unregister_all(tuya_mqtt_context_t *context)
     while (target) {
         entry = target;
         target = entry->next;
-        tal_free((void *)entry);
+        tal_free(entry);
     }
     /* UNLOCK */
 
@@ -685,11 +663,16 @@ int tuya_mqtt_client_publish_common(tuya_mqtt_context_t *context, const char *to
     handle->cb = cb;
     handle->user_data = user_data;
     handle->payload_length = payload_length;
-    handle->payload = tal_malloc(payload_length);
-    if (handle->payload == NULL) {
-        return OPRT_MALLOC_FAILED;
+    if (payload_length > 0) {
+        handle->payload = tal_malloc(payload_length);
+        if (handle->payload == NULL) {
+            tal_free(handle);
+            return OPRT_MALLOC_FAILED;
+        }
+        memcpy(handle->payload, payload, payload_length);
+    } else {
+        handle->payload = NULL;
     }
-    memcpy((void *)handle->payload, payload, payload_length);
 
     if (async == false) {
         handle->msgid = mqtt_client_publish(context->mqtt_client, handle->topic, handle->payload,
@@ -755,7 +738,7 @@ int tuya_mqtt_protocol_data_publish_with_topic_common(tuya_mqtt_context_t *conte
     /* mqtt client publish */
     ret = tuya_mqtt_client_publish_common(context, (const char *)topic, (const uint8_t *)buffer, buffer_len, cb,
                                           user_data, timeout_ms, async);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return ret;
 }
 
@@ -882,8 +865,8 @@ int tuya_mqtt_loop(tuya_mqtt_context_t *context)
         if (entry->timeout <= tal_time_get_posix()) {
             entry->cb(OPRT_TIMEOUT, entry->user_data);
             *next_handle = entry->next;
-            tal_free((void *)entry->payload);
-            tal_free((void *)entry);
+            tal_free(entry->payload);
+            tal_free(entry);
             continue;
         }
 
@@ -969,9 +952,14 @@ int tuya_mqtt_upgrade_progress_report(tuya_mqtt_context_t *context, int channel,
         return OPRT_MALLOC_FAILED;
     }
 
-    int buffer_size = sprintf((char *)data_buf, "{\"progress\":\"%d\",\"firmwareType\":%d}", percent, channel);
+    int buffer_size = snprintf((char *)data_buf, 128, "{\"progress\":\"%d\",\"firmwareType\":%d}", percent,
+                               channel);
+    if (buffer_size < 0 || buffer_size >= 128) {
+        tal_free(data_buf);
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
     uint16_t msgid = tuya_mqtt_protocol_data_publish(context, PRO_UPGE_PUSH, data_buf, (uint16_t)buffer_size);
-    tal_free((void *)data_buf);
+    tal_free(data_buf);
     if (msgid <= 0) {
         return OPRT_COM_ERROR;
     }

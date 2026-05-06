@@ -339,7 +339,7 @@ static void lan_app_key_make(void)
     app_key2[14] = 'f';
     app_key2[15] = 'n';
     tal_md5_ret(app_key2, APP_KEY_LEN, app_key_encode);
-    memcpy((void *)app_key2, app_key_encode, APP_KEY_LEN);
+    memcpy(app_key2, app_key_encode, APP_KEY_LEN);
 
     app_key3[0] = 'W';
     app_key3[1] = 'z';
@@ -358,7 +358,7 @@ static void lan_app_key_make(void)
     app_key3[14] = 'N';
     app_key3[15] = 'J';
     tal_md5_ret(app_key3, APP_KEY_LEN, app_key_encode);
-    memcpy((void *)app_key3, app_key_encode, APP_KEY_LEN);
+    memcpy(app_key3, app_key_encode, APP_KEY_LEN);
 }
 
 static int lan_tcp_setup_serv_socket(int port)
@@ -473,7 +473,7 @@ static int lan_send(lan_session_t *session, uint32_t fr_num, uint32_t fr_type, u
     }
     memset(plaintext_data, 0, plaintext_len);
     plaintext_data->ret_code = ret_code;
-    memcpy((void *)plaintext_data->data, data, len);
+    memcpy(plaintext_data->data, data, len);
     // lpv3.5 test arch
     lpv35_frame_object_t frame = {.sequence = session->sequence_out++,
                                   .type = fr_type,
@@ -482,15 +482,15 @@ static int lan_send(lan_session_t *session, uint32_t fr_num, uint32_t fr_type, u
     send_buf = tal_malloc(lpv35_frame_buffer_size_get(&frame));
     if (send_buf == NULL) {
         PR_ERR("send_buf malloc fail");
-        tal_free((void *)plaintext_data);
+        tal_free(plaintext_data);
         return OPRT_MALLOC_FAILED;
     }
     memset(send_buf, 0, lpv35_frame_buffer_size_get(&frame));
     op_ret = lpv35_frame_serialize(key, 16, &frame, send_buf, (int *)&send_len);
-    tal_free((void *)plaintext_data);
+    tal_free(plaintext_data);
     if (op_ret != OPRT_OK) {
         PR_ERR("lpv35_frame_serialize fail:%d", op_ret);
-        tal_free((void *)send_buf);
+        tal_free(send_buf);
         return OPRT_COM_ERROR;
     }
     tal_mutex_lock(s_lan_mgr->mutex);
@@ -507,7 +507,7 @@ static int lan_send(lan_session_t *session, uint32_t fr_num, uint32_t fr_type, u
         }
     }
 
-    tal_free((void *)send_buf);
+    tal_free(send_buf);
     if (op_ret == OPRT_SVC_LAN_SEND_ERR) {
         lan_session_fault_set(session);
         PR_ERR("ret:%d send_len:%d errno:%d", ret, send_len, tal_net_get_errno());
@@ -556,8 +556,12 @@ static void lan_make_udp_packets(uint8_t **out, int *p_olen)
     netmgr_conn_get(NETCONN_AUTO, NETCONN_CMD_IP, &ip);
 
     lan_mgr_t *lan = lan_mgr_get();
+    if (lan == NULL || lan->iot_client == NULL || out == NULL || p_olen == NULL) {
+        PR_ERR("lan_make_udp_packets invalid param");
+        return;
+    }
 
-    uint32_t offset = 0;
+    size_t offset = 0;
     char *id = NULL;
     if (lan->iot_client->is_activated) {
         id = lan->iot_client->activate.devid;
@@ -573,69 +577,83 @@ static void lan_make_udp_packets(uint8_t **out, int *p_olen)
     }
     memset(json_buf, 0, data_len);
 
-    offset += snprintf(json_buf + offset, data_len - offset, "{\"ip\":\"%s\",\"gwId\":\"%s\",\"uuid\":\"%s\"", ip.ip, id,
-                      lan->iot_client->config.uuid);
-    if (offset >= data_len) {
-        PR_ERR("Buffer overflow in IP/GW/UUID");
-        tal_free((void *)json_buf);
+    size_t remain = data_len;
+    int ret = snprintf(json_buf + offset, remain, "{\"ip\":\"%s\",\"gwId\":\"%s\",\"uuid\":\"%s\"", ip.ip, id,
+                       lan->iot_client->config.uuid);
+    if (ret < 0 || (size_t)ret >= remain) {
+        PR_ERR("json_buf overflow when writing ip info");
+        tal_free(json_buf);
         return;
     }
-    
-    int active_len = snprintf(json_buf + offset, data_len - offset, ",\"active\":%d,\"ablilty\":0", lan->iot_client->is_activated ? 2 : 0);
-    if (active_len >= data_len - offset) {
-        PR_ERR("Buffer overflow in active");
-        tal_free((void *)json_buf);
-        return;
-    }
-    offset += active_len;
-    
-    int encrypt_len = snprintf(json_buf + offset, data_len - offset, ",\"encrypt\":true");
-    if (encrypt_len >= data_len - offset) {
-        PR_ERR("Buffer overflow in encrypt");
-        tal_free((void *)json_buf);
-        return;
-    }
-    offset += encrypt_len;
-    
-    int product_len = snprintf(json_buf + offset, data_len - offset, ",\"productKey\":\"%s\"", lan->iot_client->config.productkey);
-    if (product_len >= data_len - offset) {
-        PR_ERR("Buffer overflow in productKey");
-        tal_free((void *)json_buf);
-        return;
-    }
-    offset += product_len;
-    
-    int version_len = snprintf(json_buf + offset, data_len - offset, ",\"version\":\"%s\"", TUYA_LPV35);
-    if (version_len >= data_len - offset) {
-        PR_ERR("Buffer overflow in version");
-        tal_free((void *)json_buf);
-        return;
-    }
-    offset += version_len;
-    
-    int sl_len = snprintf(json_buf + offset, data_len - offset, ",\"sl\":%d", TUYA_SECURITY_LEVEL);
-    if (sl_len >= data_len - offset) {
-        PR_ERR("Buffer overflow in sl");
-        tal_free((void *)json_buf);
-        return;
-    }
-    offset += sl_len;
+    offset += ret;
+    remain = data_len - offset;
 
-    json_buf[offset] = '}';
-    json_buf[offset + 1] = 0;
+    ret = snprintf(json_buf + offset, remain, ",\"active\":%d,\"ablilty\":0",
+                   lan->iot_client->is_activated ? 2 : 0);
+    if (ret < 0 || (size_t)ret >= remain) {
+        PR_ERR("json_buf overflow when writing active");
+        tal_free(json_buf);
+        return;
+    }
+    offset += ret;
+    remain = data_len - offset;
+
+    ret = snprintf(json_buf + offset, remain, ",\"encrypt\":true");
+    if (ret < 0 || (size_t)ret >= remain) {
+        PR_ERR("json_buf overflow when writing encrypt");
+        tal_free(json_buf);
+        return;
+    }
+    offset += ret;
+    remain = data_len - offset;
+
+    ret = snprintf(json_buf + offset, remain, ",\"productKey\":\"%s\"", lan->iot_client->config.productkey);
+    if (ret < 0 || (size_t)ret >= remain) {
+        PR_ERR("json_buf overflow when writing productKey");
+        tal_free(json_buf);
+        return;
+    }
+    offset += ret;
+    remain = data_len - offset;
+
+    ret = snprintf(json_buf + offset, remain, ",\"version\":\"%s\"", TUYA_LPV35);
+    if (ret < 0 || (size_t)ret >= remain) {
+        PR_ERR("json_buf overflow when writing version");
+        tal_free(json_buf);
+        return;
+    }
+    offset += ret;
+    remain = data_len - offset;
+
+    ret = snprintf(json_buf + offset, remain, ",\"sl\":%d", TUYA_SECURITY_LEVEL);
+    if (ret < 0 || (size_t)ret >= remain) {
+        PR_ERR("json_buf overflow when writing sl");
+        tal_free(json_buf);
+        return;
+    }
+    offset += ret;
+    remain = data_len - offset;
+
+    if (remain < 2) {
+        PR_ERR("json_buf overflow when finalizing");
+        tal_free(json_buf);
+        return;
+    }
+    json_buf[offset++] = '}';
+    json_buf[offset] = 0;
 
     // PR_DEBUG("BufToSend %d %d:%s",data_len, offset, json_buf);
     int plaintext_len = sizeof(lpv35_plaintext_data_t) + strlen(json_buf);
     lpv35_plaintext_data_t *plaintext_data = tal_malloc(plaintext_len);
     if (plaintext_data == NULL) {
         PR_ERR("plaintext_data fail");
-        tal_free((void *)json_buf);
+        tal_free(json_buf);
         return;
     }
     memset(plaintext_data, 0, plaintext_len);
     plaintext_data->ret_code = 0;
-    memcpy((void *)plaintext_data->data, json_buf, strlen(json_buf));
-    tal_free((void *)json_buf);
+    memcpy(plaintext_data->data, json_buf, strlen(json_buf));
+    tal_free(json_buf);
 
     // lpv3.5 test arch
     lpv35_frame_object_t frame = {
@@ -648,15 +666,15 @@ static void lan_make_udp_packets(uint8_t **out, int *p_olen)
     uint8_t *send_buf = tal_malloc(lpv35_frame_buffer_size_get(&frame));
     if (send_buf == NULL) {
         PR_ERR("send_buf malloc fail");
-        tal_free((void *)plaintext_data);
+        tal_free(plaintext_data);
         return;
     }
     memset(send_buf, 0, lpv35_frame_buffer_size_get(&frame));
     op_ret = lpv35_frame_serialize(app_key2, APP_KEY_LEN, &frame, send_buf, p_olen);
-    tal_free((void *)plaintext_data);
+    tal_free(plaintext_data);
     if (op_ret != OPRT_OK) {
         PR_ERR("lpv35_frame_serialize fail:%d", op_ret);
-        tal_free((void *)send_buf);
+        tal_free(send_buf);
         return;
     }
 
@@ -704,14 +722,14 @@ int tuya_lan_dp_report(char *dpstr)
     int i = 0;
 
     for (i = 0; i < lan->cfg->client_num; i++) {
-        if (session[i].active && session[i].fault == false && session[i].secret_key != NULL) {
+        if (session[i].active && session[i].fault == false && session[i].secret_key[0] != '\0') {
             op_ret = lan_send(&session[i], 0, FRM_TP_STAT_REPORT, 0, out, out_len, false);
             if (OPRT_OK != op_ret) {
                 PR_ERR("tcp_send op_ret:%d", op_ret);
             }
         }
     }
-    tal_free((void *)out);
+    tal_free(out);
 
     return OPRT_OK;
 }
@@ -766,7 +784,7 @@ static void lan_protocol_process(lan_mgr_t *lan, lan_session_t *session, lpv35_f
     FRM_TP_CMD_ERR:
         lan_send(session, frame->sequence, frame->type, 1, (uint8_t *)describe, describe ? strlen(describe) : 0, true);
         if (jsonstr) {
-            tal_free((void *)jsonstr);
+            tal_free(jsonstr);
         }
         if (root) {
             cJSON_Delete(root);
@@ -780,7 +798,7 @@ static void lan_protocol_process(lan_mgr_t *lan, lan_session_t *session, lpv35_f
             break;
         }
         // randA
-        memcpy((void *)session->randA, out, RAND_LEN);
+        memcpy(session->randA, out, RAND_LEN);
         // hmac randA
         tal_sha256_mac((const uint8_t *)s_lan_mgr->iot_client->activate.localkey,
                        strlen(s_lan_mgr->iot_client->activate.localkey), session->randA, RAND_LEN, session->hmac);
@@ -793,11 +811,11 @@ static void lan_protocol_process(lan_mgr_t *lan, lan_session_t *session, lpv35_f
             break;
         }
         memset(frame_buffer, 0, RAND_LEN + HMAC_LEN);
-        memcpy((void *)frame_buffer, session->randB, RAND_LEN);
-        memcpy((void *)frame_buffer + RAND_LEN, session->hmac, HMAC_LEN);
+        memcpy(frame_buffer, session->randB, RAND_LEN);
+        memcpy(frame_buffer + RAND_LEN, session->hmac, HMAC_LEN);
         // response
         lan_send(session, frame->sequence, FRM_SECURITY_TYPE4, 0, frame_buffer, RAND_LEN + HMAC_LEN, true);
-        tal_free((void *)frame_buffer);
+        tal_free(frame_buffer);
         break;
 
     case FRM_SECURITY_TYPE5:
@@ -861,7 +879,7 @@ static void lan_protocol_process(lan_mgr_t *lan, lan_session_t *session, lpv35_f
 
         PR_DEBUG("Send Query To App:%s", tmp_data);
         lan_send(session, frame->sequence, frame->type, 0, (uint8_t *)tmp_data, strlen(tmp_data), true);
-        tal_free((void *)tmp_data);
+        tal_free(tmp_data);
         cJSON_Delete(root);
         break;
 
@@ -887,7 +905,7 @@ static void lan_tcp_client_sock_err(int fd)
     return;
 }
 
-static void lan_tcp_client_sock_read(int fd)
+static void lan_tcp_client_sock_read(int32_t fd)
 {
     int ret = 0;
     uint8_t *frame_buffer = NULL;
@@ -958,7 +976,7 @@ recv_again:
                 break;
             }
             memset(tmp_recv_buf, 0, frame_len + 1);
-            memcpy((void *)tmp_recv_buf, lan->recv_buf + offset, recv_datalen - offset);
+            memcpy(tmp_recv_buf, lan->recv_buf + offset, recv_datalen - offset);
             recv_datalen = recv_datalen - offset;
             offset = 0;
             ret = tal_net_recv_nd_size(session->fd, tmp_recv_buf + recv_datalen, frame_len + 1 - recv_datalen,
@@ -1026,12 +1044,12 @@ recv_again:
         lan_session_time_update(session, tal_time_get_posix());
         lan_protocol_process(lan, session, &frame_out);
         if (frame_out.data) {
-            tal_free((void *)frame_out.data);
+            tal_free(frame_out.data);
         }
     }
 
     if (tmp_recv_buf) {
-        tal_free((void *)tmp_recv_buf);
+        tal_free(tmp_recv_buf);
     } else if (recv_datalen != offset) {
         PR_DEBUG("recv_datalen:%d, offset:%d", recv_datalen, offset);
         memmove(lan->recv_buf, lan->recv_buf + offset, recv_datalen - offset);
@@ -1042,7 +1060,7 @@ recv_again:
     return;
 }
 
-static void lan_tcp_serv_sock_read(int fd)
+static void lan_tcp_serv_sock_read(int32_t fd)
 {
     int ret = OPRT_OK;
     TUYA_IP_ADDR_T addr = 0;
@@ -1125,7 +1143,7 @@ BOOL_T __udp_serv_is_in_packet_vaild(uint8_t *frame_buffer, uint32_t recv_datale
     return true;
 }
 
-static void lan_udp_serv_sock_read(int fd)
+static void lan_udp_serv_sock_read(int32_t fd)
 {
     int op_ret = OPRT_OK;
     int recv_datalen = 0;
@@ -1159,20 +1177,20 @@ static void lan_udp_serv_sock_read(int fd)
     root = cJSON_Parse((char *)frame_out.data);
     if (NULL == root) {
         PR_ERR("Json err");
-        tal_free((void *)frame_out.data);
+        tal_free(frame_out.data);
         return;
     }
     if ((NULL == cJSON_GetObjectItem(root, "ip")) || (NULL == cJSON_GetObjectItem(root, "from"))) {
         PR_ERR("json data invaild");
         cJSON_Delete(root);
-        tal_free((void *)frame_out.data);
+        tal_free(frame_out.data);
         return;
     }
     addr_json = tal_net_str2addr(cJSON_GetObjectItem(root, "ip")->valuestring);
     // PR_DEBUG("ip:%s", cJSON_GetObjectItem(root, "ip")->valuestring);
     // PR_DEBUG("addr:0x%x, addr_json:0x%x", addr, addr_json);
     cJSON_Delete(root);
-    tal_free((void *)frame_out.data);
+    tal_free(frame_out.data);
 
     int olen = 0;
     uint8_t *send_buf = NULL;
@@ -1192,7 +1210,7 @@ static void lan_udp_serv_sock_read(int fd)
             op_ret = OPRT_SVC_LAN_SEND_ERR;
         }
     }
-    tal_free((void *)send_buf);
+    tal_free(send_buf);
     if (op_ret == OPRT_SVC_LAN_SEND_ERR) {
         PR_ERR("sendto Fail: len:%d ret:%d,errno:%d port:%d", olen, ret, tal_net_get_errno(), SERV_PORT_APP_UDP_BCAST);
     }
@@ -1279,6 +1297,10 @@ static int lan_tcp_create_serv_socket(lan_mgr_t *lan)
  */
 int tuya_lan_init(tuya_iot_client_t *iot_client)
 {
+    if (iot_client == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
     if (s_lan_mgr) {
         return OPRT_OK;
     }
@@ -1353,7 +1375,7 @@ int tuya_lan_exit(void)
     }
     lan_session_close_all();
     if (s_lan_mgr->session) {
-        tal_free((void *)s_lan_mgr->session);
+        tal_free(s_lan_mgr->session);
         s_lan_mgr->session = NULL;
     }
     if (s_lan_mgr->udp_client_fd >= 0) {
@@ -1362,12 +1384,71 @@ int tuya_lan_exit(void)
     }
     tal_mutex_release(s_lan_mgr->mutex);
     tal_mutex_release(s_lan_mgr->tcp_mutex);
-    tal_free((void *)s_lan_mgr);
+    tal_free(s_lan_mgr);
     s_lan_mgr = NULL;
 
     PR_DEBUG("lan exit");
 
     return OPRT_OK;
+}
+
+/**
+ * @brief Disable LAN service and release sockets
+ *
+ * @return OPRT_OK on success. Others on error, please refer to
+ * tuya_error_code.h
+ */
+int tuya_lan_disable(void)
+{
+    if (s_lan_mgr == NULL) {
+        return OPRT_OK;
+    }
+
+    lan_session_close_all();
+
+    if (s_lan_mgr->tcp_serv_fd >= 0) {
+        tuya_unreg_lan_sock(s_lan_mgr->tcp_serv_fd);
+        s_lan_mgr->tcp_serv_fd = -1;
+    }
+
+    if (s_lan_mgr->udp_serv_fd >= 0) {
+        tuya_unreg_lan_sock(s_lan_mgr->udp_serv_fd);
+        s_lan_mgr->udp_serv_fd = -1;
+    }
+
+    if (s_lan_mgr->udp_client_fd >= 0) {
+        tal_net_close(s_lan_mgr->udp_client_fd);
+        s_lan_mgr->udp_client_fd = -1;
+    }
+
+    tuya_sock_loop_disable();
+    uint32_t wait_ms = 0;
+    while (tuya_sock_loop_is_inited() && wait_ms < 3000) {
+        tal_system_sleep(50);
+        wait_ms += 50;
+    }
+
+    return OPRT_OK;
+}
+
+/**
+ * @brief Enable LAN service
+ *
+ * @return OPRT_OK on success. Others on error, please refer to
+ * tuya_error_code.h
+ */
+int tuya_lan_enable(void)
+{
+    if (s_lan_mgr != NULL) {
+        return OPRT_OK;
+    }
+
+    tuya_iot_client_t *client = tuya_iot_client_get();
+    if (client == NULL || client->is_activated == false) {
+        return OPRT_COM_ERROR;
+    }
+
+    return tuya_lan_init(client);
 }
 
 /**

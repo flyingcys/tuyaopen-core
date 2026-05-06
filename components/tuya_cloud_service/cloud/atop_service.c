@@ -17,6 +17,7 @@
  *
  */
 
+#include <inttypes.h>
 #include "tuya_cloud_types.h"
 #include "atop_base.h"
 #include "tal_log.h"
@@ -45,7 +46,14 @@
  */
 int atop_service_activate_request(const tuya_activite_request_t *request, atop_base_response_t *response)
 {
-    if (NULL == request || NULL == response) {
+    if (request == NULL || response == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (request->token == NULL || request->sw_ver == NULL || request->product_key == NULL || request->pv == NULL ||
+        request->bv == NULL || request->authkey == NULL || request->uuid == NULL || request->token[0] == '\0' ||
+        request->sw_ver[0] == '\0' || request->product_key[0] == '\0' || request->pv[0] == '\0' ||
+        request->bv[0] == '\0' || request->authkey[0] == '\0' || request->uuid[0] == '\0') {
         return OPRT_INVALID_PARM;
     }
 
@@ -84,125 +92,120 @@ int atop_service_activate_request(const tuya_activite_request_t *request, atop_b
 
     /* activate JSON format */
     size_t offset = 0;
+    size_t remain = prealloc_size;
 
     /* Requires params */
-    int req_len = snprintf(buffer, prealloc_size,
-                     "{\"token\":\"%s\",\"softVer\":\"%s\",\"productKey\":\"%"
-                     "s\",\"protocolVer\":\"%s\",\"baselineVer\":\"%s\"",
-                     request->token, request->sw_ver, request->product_key, request->pv, request->bv);
-    if (req_len >= prealloc_size) {
-        PR_ERR("Buffer overflow in required params");
-        tal_free((void *)buffer);
-        return OPRT_MALLOC_FAILED;
+    int write_len = snprintf(buffer + offset, remain,
+                             "{\"token\":\"%s\",\"softVer\":\"%s\",\"productKey\":\"%s\",\"protocolVer\":\"%s\","
+                             "\"baselineVer\":\"%s\"",
+                             request->token, request->sw_ver, request->product_key, request->pv, request->bv);
+    if (write_len < 0 || (size_t)write_len >= remain) {
+        tal_free(buffer);
+        return OPRT_BUFFER_NOT_ENOUGH;
     }
-    offset = req_len;
+    offset += (size_t)write_len;
+    remain = prealloc_size - offset;
 
     /* option params */
-    int opt_len = snprintf(buffer + offset, prealloc_size - offset, ",\"options\": \"%s", "{\\\"otaChannel\\\":0, ");
-    if (opt_len >= prealloc_size - offset) {
-        PR_ERR("Buffer overflow in options");
-        tal_free((void *)buffer);
-        return OPRT_MALLOC_FAILED;
+    write_len = snprintf(buffer + offset, remain, ",\"options\": \"%s", "{\\\"otaChannel\\\":0, ");
+    if (write_len < 0 || (size_t)write_len >= remain) {
+        tal_free(buffer);
+        return OPRT_BUFFER_NOT_ENOUGH;
     }
-    offset += opt_len;
-    
+    offset += (size_t)write_len;
+    remain = prealloc_size - offset;
     if (request->firmware_key && request->firmware_key[0]) {
-        int fk_len = snprintf(buffer + offset, prealloc_size - offset, "\\\"isFK\\\":true");
-        if (fk_len >= prealloc_size - offset) {
-            PR_ERR("Buffer overflow in isFK true");
-            tal_free((void *)buffer);
-            return OPRT_MALLOC_FAILED;
-        }
-        offset += fk_len;
+        write_len = snprintf(buffer + offset, remain, "\\\"isFK\\\":true");
     } else {
-        int fk_len = snprintf(buffer + offset, prealloc_size - offset, "\\\"isFK\\\":false");
-        if (fk_len >= prealloc_size - offset) {
-            PR_ERR("Buffer overflow in isFK false");
-            tal_free((void *)buffer);
-            return OPRT_MALLOC_FAILED;
-        }
-        offset += fk_len;
+        write_len = snprintf(buffer + offset, remain, "\\\"isFK\\\":false");
     }
-    
-    int close_opt_len = snprintf(buffer + offset, prealloc_size - offset, "}\"");
-    if (close_opt_len >= prealloc_size - offset) {
-        PR_ERR("Buffer overflow in close options");
-        tal_free((void *)buffer);
-        return OPRT_MALLOC_FAILED;
+    if (write_len < 0 || (size_t)write_len >= remain) {
+        tal_free(buffer);
+        return OPRT_BUFFER_NOT_ENOUGH;
     }
-    offset += close_opt_len;
+    offset += (size_t)write_len;
+    remain = prealloc_size - offset;
+
+    write_len = snprintf(buffer + offset, remain, "}\"");
+    if (write_len < 0 || (size_t)write_len >= remain) {
+        tal_free(buffer);
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
+    offset += (size_t)write_len;
+    remain = prealloc_size - offset;
 
     /* firmware_key */
     if (request->firmware_key && request->firmware_key[0]) {
-        int pk_len = snprintf(buffer + offset, prealloc_size - offset, ",\"productKeyStr\":\"%s\"", request->firmware_key);
-        if (pk_len >= prealloc_size - offset) {
-            PR_ERR("Buffer overflow in productKeyStr");
-            tal_free((void *)buffer);
-            return OPRT_MALLOC_FAILED;
+        write_len = snprintf(buffer + offset, remain, ",\"productKeyStr\":\"%s\"", request->firmware_key);
+        if (write_len < 0 || (size_t)write_len >= remain) {
+            tal_free(buffer);
+            return OPRT_BUFFER_NOT_ENOUGH;
         }
-        offset += pk_len;
+        offset += (size_t)write_len;
+        remain = prealloc_size - offset;
     }
 
     /* Activated atop */
     if (request->devid && strlen(request->devid) > 0) {
-        int devid_len = snprintf(buffer + offset, prealloc_size - offset, ",\"devId\":\"%s\"", request->devid);
-        if (devid_len >= prealloc_size - offset) {
-            PR_ERR("Buffer overflow in devId");
-            tal_free((void *)buffer);
-            return OPRT_MALLOC_FAILED;
+        write_len = snprintf(buffer + offset, remain, ",\"devId\":\"%s\"", request->devid);
+        if (write_len < 0 || (size_t)write_len >= remain) {
+            tal_free(buffer);
+            return OPRT_BUFFER_NOT_ENOUGH;
         }
-        offset += devid_len;
+        offset += (size_t)write_len;
+        remain = prealloc_size - offset;
     }
 
     /* modules */
     if (request->modules && strlen(request->modules) > 0) {
-        int mod_len = snprintf(buffer + offset, prealloc_size - offset, ",\"modules\":\"%s\"", request->modules);
-        if (mod_len >= prealloc_size - offset) {
-            PR_ERR("Buffer overflow in modules");
-            tal_free((void *)buffer);
-            return OPRT_MALLOC_FAILED;
+        write_len = snprintf(buffer + offset, remain, ",\"modules\":\"%s\"", request->modules);
+        if (write_len < 0 || (size_t)write_len >= remain) {
+            tal_free(buffer);
+            return OPRT_BUFFER_NOT_ENOUGH;
         }
-        offset += mod_len;
+        offset += (size_t)write_len;
+        remain = prealloc_size - offset;
     }
 
     /* feature */
     if (request->feature && strlen(request->feature) > 0) {
-        int feat_len = snprintf(buffer + offset, prealloc_size - offset, ",\"feature\":\"%s\"", request->feature);
-        if (feat_len >= prealloc_size - offset) {
-            PR_ERR("Buffer overflow in feature");
-            tal_free((void *)buffer);
-            return OPRT_MALLOC_FAILED;
+        write_len = snprintf(buffer + offset, remain, ",\"feature\":\"%s\"", request->feature);
+        if (write_len < 0 || (size_t)write_len >= remain) {
+            tal_free(buffer);
+            return OPRT_BUFFER_NOT_ENOUGH;
         }
-        offset += feat_len;
+        offset += (size_t)write_len;
+        remain = prealloc_size - offset;
     }
 
     /* skill_param */
     if (request->skill_param && strlen(request->skill_param) > 0) {
-        int skill_len = snprintf(buffer + offset, prealloc_size - offset, ",\"skillParam\":\"%s\"", request->skill_param);
-        if (skill_len >= prealloc_size - offset) {
-            PR_ERR("Buffer overflow in skillParam");
-            tal_free((void *)buffer);
-            return OPRT_MALLOC_FAILED;
+        write_len = snprintf(buffer + offset, remain, ",\"skillParam\":\"%s\"", request->skill_param);
+        if (write_len < 0 || (size_t)write_len >= remain) {
+            tal_free(buffer);
+            return OPRT_BUFFER_NOT_ENOUGH;
         }
-        offset += skill_len;
+        offset += (size_t)write_len;
+        remain = prealloc_size - offset;
     }
 
     /* default support device OTA */
-    int attr_len = snprintf(buffer + offset, prealloc_size - offset, ",\"devAttribute\":%u", 1 << ATTRIBUTE_OTA);
-    if (attr_len >= prealloc_size - offset) {
-        PR_ERR("Buffer overflow in devAttribute");
-        tal_free((void *)buffer);
-        return OPRT_MALLOC_FAILED;
+    write_len = snprintf(buffer + offset, remain, ",\"devAttribute\":%u", 1 << ATTRIBUTE_OTA);
+    if (write_len < 0 || (size_t)write_len >= remain) {
+        tal_free(buffer);
+        return OPRT_BUFFER_NOT_ENOUGH;
     }
-    offset += attr_len;
+    offset += (size_t)write_len;
+    remain = prealloc_size - offset;
 
-    int final_len = snprintf(buffer + offset, prealloc_size - offset, ",\"cadVer\":\"%s\",\"cdVer\":\"%s\",\"t\":%d}", CAD_VER, CD_VER, timestamp);
-    if (final_len >= prealloc_size - offset) {
-        PR_ERR("Buffer overflow in final params");
-        tal_free((void *)buffer);
-        return OPRT_MALLOC_FAILED;
+    write_len =
+        snprintf(buffer + offset, remain, ",\"cadVer\":\"%s\",\"cdVer\":\"%s\",\"t\":%" PRIu32 "}", CAD_VER, CD_VER,
+                 timestamp);
+    if (write_len < 0 || (size_t)write_len >= remain) {
+        tal_free(buffer);
+        return OPRT_BUFFER_NOT_ENOUGH;
     }
-    offset += final_len;
+    offset += (size_t)write_len;
 
     PR_DEBUG("POST JSON:%s", buffer);
 
@@ -219,7 +222,7 @@ int atop_service_activate_request(const tuya_activite_request_t *request, atop_b
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     if (OPRT_OK != rt) {
         PR_ERR("atop_base_request error:%d", rt);
         return rt;
@@ -240,7 +243,7 @@ int atop_service_activate_request(const tuya_activite_request_t *request, atop_b
  */
 int atop_service_client_reset(const char *id, const char *key)
 {
-    if (NULL == id || NULL == key) {
+    if (id == NULL || key == NULL || id[0] == '\0' || key[0] == '\0') {
         return OPRT_INVALID_PARM;
     }
 
@@ -248,7 +251,7 @@ int atop_service_client_reset(const char *id, const char *key)
 
     /* post data */
 #define RESET_POST_BUFFER_LEN 32
-    size_t buffer_len = 0;
+    int buffer_len = 0;
     char *buffer = tal_malloc(RESET_POST_BUFFER_LEN);
     if (NULL == buffer) {
         PR_ERR("post buffer malloc fail");
@@ -256,7 +259,11 @@ int atop_service_client_reset(const char *id, const char *key)
     }
 
     uint32_t timestamp = tal_time_get_posix();
-    buffer_len = snprintf(buffer, RESET_POST_BUFFER_LEN, "{\"t\":%d}", timestamp);
+    buffer_len = snprintf(buffer, RESET_POST_BUFFER_LEN, "{\"t\":%" PRIu32 "}", timestamp);
+    if (buffer_len < 0 || buffer_len >= RESET_POST_BUFFER_LEN) {
+        tal_free(buffer);
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -274,7 +281,7 @@ int atop_service_client_reset(const char *id, const char *key)
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
 
     bool success = response.success;
     atop_base_response_free(&response);
@@ -327,15 +334,17 @@ int atop_service_dynamic_cfg_get_v20(const char *id, const char *key, HTTP_DYNAM
 
     switch (type) {
     case HTTP_DYNAMIC_CFG_TZ:
-        snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":\"[\\\"timezone\\\"]\",\"t\":%d}", timestamp);
+        snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":\"[\\\"timezone\\\"]\",\"t\":%" PRIu32 "}",
+                 timestamp);
         break;
     case HTTP_DYNAMIC_CFG_RATERULE:
-        snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":\"[\\\"rateRule\\\"]\",\"t\":%d}", timestamp);
+        snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":\"[\\\"rateRule\\\"]\",\"t\":%" PRIu32 "}",
+                 timestamp);
         break;
     case HTTP_DYNAMIC_CFG_ALL:
     default:
-        snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":\"[\\\"timezone\\\",\\\"rateRule\\\"]\",\"t\":%d}",
-                 timestamp);
+        snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN,
+                 "{\"type\":\"[\\\"timezone\\\",\\\"rateRule\\\"]\",\"t\":%" PRIu32 "}", timestamp);
         break;
     }
 
@@ -355,7 +364,7 @@ int atop_service_dynamic_cfg_get_v20(const char *id, const char *key, HTTP_DYNAM
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     if (OPRT_OK != rt) {
         PR_ERR("atop_base_request error:%d", rt);
         return rt;
@@ -394,7 +403,7 @@ int atop_service_upgrade_info_get_v44(const char *id, const char *key, int chann
     }
 
     uint32_t timestamp = tal_time_get_posix();
-    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":%d,\"t\":%d}", channel, timestamp);
+    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":%d,\"t\":%" PRIu32 "}", channel, timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -412,7 +421,7 @@ int atop_service_upgrade_info_get_v44(const char *id, const char *key, int chann
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     if (OPRT_OK != rt) {
         PR_ERR("atop_base_request error:%d", rt);
         return rt;
@@ -450,7 +459,7 @@ int atop_service_auto_upgrade_info_get_v44(const char *id, const char *key, atop
     }
 
     uint32_t timestamp = tal_time_get_posix();
-    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"subId\":null,\"t\":%d}", timestamp);
+    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"subId\":null,\"t\":%" PRIu32 "}", timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -468,7 +477,7 @@ int atop_service_auto_upgrade_info_get_v44(const char *id, const char *key, atop
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     if (OPRT_OK != rt) {
         PR_ERR("atop_base_request error:%d", rt);
         return rt;
@@ -506,8 +515,8 @@ int atop_service_upgrade_status_update_v41(const char *id, const char *key, int 
     }
 
     uint32_t timestamp = tal_time_get_posix();
-    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":%d,\"upgradeStatus\":%d,\"t\":%d}", channel,
-                          status, timestamp);
+    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"type\":%d,\"upgradeStatus\":%d,\"t\":%" PRIu32 "}",
+                          channel, status, timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -527,7 +536,7 @@ int atop_service_upgrade_status_update_v41(const char *id, const char *key, int 
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
 
     bool success = response.success;
     atop_base_response_free(&response);
@@ -575,7 +584,8 @@ int atop_service_version_update_v41(const char *id, const char *key, const char 
     }
 
     uint32_t timestamp = tal_time_get_posix();
-    buffer_len = snprintf(buffer, UPDATE_VERSION_BUFFER_LEN, "{\"versions\":\"%s\",\"t\":%d}", versions, timestamp);
+    buffer_len =
+        snprintf(buffer, UPDATE_VERSION_BUFFER_LEN, "{\"versions\":\"%s\",\"t\":%" PRIu32 "}", versions, timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -595,7 +605,7 @@ int atop_service_version_update_v41(const char *id, const char *key, const char 
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
 
     bool success = response.success;
     atop_base_response_free(&response);
@@ -643,7 +653,7 @@ int atop_service_put_rst_log_v10(const char *id, const char *key, const char *rs
         return OPRT_MALLOC_FAILED;
     }
     uint32_t timestamp = tal_time_get_posix();
-    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{%s,\"t\":%d}", rst_buffer, timestamp);
+    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{%s,\"t\":%" PRIu32 "}", rst_buffer, timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -663,7 +673,7 @@ int atop_service_put_rst_log_v10(const char *id, const char *key, const char *rs
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
 
     bool success = response.success;
     atop_base_response_free(&response);
@@ -712,7 +722,7 @@ int atop_service_outdoors_property_upload(const char *id, const char *key, const
     // {"countryCode":"86","phone":"15656065877"}
     buffer_len = snprintf(buffer, UPDATE_PROPERTY_BUFFER_LEN,
                           "{\"devId\":\"%s\",\"property\":{\"code\":\"phoneInfo\",\"value\":{"
-                          "\"countryCode\":\"%s\",\"phone\":\"%s\"}},\"t\":%d}",
+                          "\"countryCode\":\"%s\",\"phone\":\"%s\"}},\"t\":%" PRIu32 "}",
                           id, countryCode, phone, timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
@@ -733,7 +743,7 @@ int atop_service_outdoors_property_upload(const char *id, const char *key, const
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
 
     bool success = response.success;
     atop_base_response_free(&response);
@@ -782,8 +792,8 @@ int atop_service_iccid_upload(const char *id, const char *key, const char *iccid
     }
 
     // {"countryCode":"86","phone":"15656065877"}
-    buffer_len =
-        snprintf(buffer, UPDATE_PROPERTY_BUFFER_LEN, "{\"metas\":{\"catIccId\":\"%s\"},\"t\":%d}", iccid, timestamp);
+    buffer_len = snprintf(buffer, UPDATE_PROPERTY_BUFFER_LEN, "{\"metas\":{\"catIccId\":\"%s\"},\"t\":%" PRIu32 "}",
+                          iccid, timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -803,7 +813,7 @@ int atop_service_iccid_upload(const char *id, const char *key, const char *iccid
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
 
     bool success = response.success;
     atop_base_response_free(&response);
@@ -849,7 +859,7 @@ int atop_service_sync_check(const char *id, const char *key, DEV_SYNC_STATUS_E *
         return OPRT_MALLOC_FAILED;
     }
 
-    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"t\":%d}", timestamp);
+    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"t\":%" PRIu32 "}", timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -869,7 +879,7 @@ int atop_service_sync_check(const char *id, const char *key, DEV_SYNC_STATUS_E *
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     if (OPRT_OK != rt) {
         PR_ERR("atop_base_request error:%d", rt);
         return rt;
@@ -931,7 +941,7 @@ int atop_service_cache_dp_get(const char *id, const char *key, const char *req_d
         return OPRT_MALLOC_FAILED;
     }
 
-    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"dps\":[%s],\"t\":%d}", req_dps, timestamp);
+    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"dps\":[%s],\"t\":%" PRIu32 "}", req_dps, timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -949,7 +959,7 @@ int atop_service_cache_dp_get(const char *id, const char *key, const char *req_d
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     if (OPRT_OK != rt) {
         PR_ERR("atop_base_request error:%d", rt);
         return rt;
@@ -984,7 +994,7 @@ int atop_service_comm_node_enable(const char *id, const char *key)
     }
 
     uint32_t timestamp = tal_time_get_posix();
-    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"t\":%d}", timestamp);
+    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"t\":%" PRIu32 "}", timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -1002,7 +1012,7 @@ int atop_service_comm_node_enable(const char *id, const char *key)
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
 
     bool success = response.success;
     atop_base_response_free(&response);
@@ -1045,7 +1055,7 @@ int atop_service_comm_node_disable(const char *id, const char *key)
     }
 
     uint32_t timestamp = tal_time_get_posix();
-    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"t\":%d}", timestamp);
+    buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"t\":%" PRIu32 "}", timestamp);
     PR_DEBUG("POST JSON:%s", buffer);
 
     /* atop_base_request object construct */
@@ -1063,7 +1073,7 @@ int atop_service_comm_node_disable(const char *id, const char *key)
 
     /* ATOP service request send */
     rt = atop_base_request(&atop_request, &response);
-    tal_free((void *)buffer);
+    tal_free(buffer);
 
     bool success = response.success;
     atop_base_response_free(&response);
@@ -1123,7 +1133,7 @@ int atop_service_comm_post_simple(const char *api, const char *version, const ch
             return OPRT_MALLOC_FAILED;
         }
 
-        buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"t\":%d}", timestamp);
+        buffer_len = snprintf(buffer, ATOP_DEFAULT_POST_BUFFER_LEN, "{\"t\":%" PRIu32 "}", timestamp);
     }
     PR_DEBUG("POST JSON:%s", buffer);
 
@@ -1144,7 +1154,7 @@ int atop_service_comm_post_simple(const char *api, const char *version, const ch
     atop_base_response_t response = {0};
     rt = atop_base_request(&atop_request, &response);
     if (buffer) {
-        tal_free((void *)buffer);
+        tal_free(buffer);
     }
 
     bool success = response.success;

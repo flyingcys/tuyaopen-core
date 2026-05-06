@@ -10,6 +10,9 @@
  *
  */
 
+#include <inttypes.h>
+#include <limits.h>
+#include <stdio.h>
 #include "tuya_config_defaults.h"
 #include "tuya_error_code.h"
 #include "cJSON.h"
@@ -28,18 +31,8 @@ static int matop_service_data_receive_cb(void *context, const uint8_t *input, si
 
     PR_TRACE("atop response raw:\r\n%.*s", ilen, input);
 
-    // Create a null-terminated copy of the input for safe JSON parsing
-    char *json_str = tal_malloc(ilen + 1);
-    if (json_str == NULL) {
-        return OPRT_MALLOC_FAILED;
-    }
-    memcpy(json_str, input, ilen);
-    json_str[ilen] = '\0';
-
     /* json parse */
-    cJSON *root = cJSON_Parse(json_str);
-    tal_free(json_str);  // Free the temporary string
-    
+    cJSON *root = cJSON_Parse((const char *)input);
     if (NULL == root) {
         PR_ERR("Json parse error");
         return OPRT_CJSON_PARSE_ERR;
@@ -96,7 +89,7 @@ static int matop_service_data_receive_cb(void *context, const uint8_t *input, si
         mqtt_atop_message_t *entry = *current;
         if (entry == target_message) {
             *current = entry->next;
-            tal_free((void *)entry);
+            tal_free(entry);
         } else {
             current = &entry->next;
         }
@@ -149,7 +142,7 @@ static int matop_service_file_rawdata_receive_cb(void *context, const uint8_t *i
         mqtt_atop_message_t *entry = *current;
         if (entry == target_message) {
             *current = entry->next;
-            tal_free((void *)entry);
+            tal_free(entry);
         } else {
             current = &entry->next;
         }
@@ -200,7 +193,11 @@ int matop_serice_init(matop_context_t *context, const matop_config_t *config)
     memset(context, 0, sizeof(matop_context_t));
     context->config = *config;
 
-    sprintf(topic_buffer, "rpc/rsp/%s", config->devid);
+    int written = snprintf(topic_buffer, sizeof(topic_buffer), "rpc/rsp/%s", config->devid);
+    if (written < 0 || written >= (int)sizeof(topic_buffer)) {
+        PR_ERR("topic buffer overflow");
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
     ret = tuya_mqtt_subscribe_message_callback_register(context->config.mqctx, topic_buffer,
                                                         on_matop_service_data_receive, context);
     if (ret != OPRT_OK) {
@@ -208,15 +205,23 @@ int matop_serice_init(matop_context_t *context, const matop_config_t *config)
         return ret;
     }
 
-    sprintf(topic_buffer, "rpc/file/%s", config->devid);
-    tuya_mqtt_subscribe_message_callback_register(context->config.mqctx, topic_buffer,
-                                                  on_matop_service_file_rawdata_receive, context);
+    written = snprintf(topic_buffer, sizeof(topic_buffer), "rpc/file/%s", config->devid);
+    if (written < 0 || written >= (int)sizeof(topic_buffer)) {
+        PR_ERR("topic buffer overflow");
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
+    ret = tuya_mqtt_subscribe_message_callback_register(context->config.mqctx, topic_buffer,
+                                                        on_matop_service_file_rawdata_receive, context);
     if (ret != OPRT_OK) {
         PR_ERR("Topic subscribe error:%s", topic_buffer);
         return ret;
     }
 
-    sprintf(context->resquest_topic, "rpc/req/%s", config->devid);
+    written = snprintf(context->resquest_topic, sizeof(context->resquest_topic), "rpc/req/%s", config->devid);
+    if (written < 0 || written >= (int)sizeof(context->resquest_topic)) {
+        PR_ERR("request topic overflow");
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
     return OPRT_OK;
 }
 
@@ -247,7 +252,7 @@ int matop_serice_yield(matop_context_t *context)
                 entry->notify_cb(&(atop_base_response_t){.success = false}, entry->user_data);
             }
             *current = entry->next;
-            tal_free((void *)entry);
+            tal_free(entry);
             return OPRT_TIMEOUT;
         } else {
             current = &entry->next;
@@ -275,11 +280,19 @@ int matop_serice_destory(matop_context_t *context)
     int ret;
     char topic_buffer[48];
 
-    sprintf(topic_buffer, "rpc/rsp/%s", context->config.devid);
+    int written = snprintf(topic_buffer, sizeof(topic_buffer), "rpc/rsp/%s", context->config.devid);
+    if (written < 0 || written >= (int)sizeof(topic_buffer)) {
+        PR_ERR("topic buffer overflow");
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
     ret = tuya_mqtt_subscribe_message_callback_unregister(context->config.mqctx, topic_buffer);
     PR_DEBUG("MQTT unsubscribe %s result:%d", topic_buffer, ret);
 
-    sprintf(topic_buffer, "rpc/file/%s", context->config.devid);
+    written = snprintf(topic_buffer, sizeof(topic_buffer), "rpc/file/%s", context->config.devid);
+    if (written < 0 || written >= (int)sizeof(topic_buffer)) {
+        PR_ERR("topic buffer overflow");
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
     tuya_mqtt_subscribe_message_callback_unregister(context->config.mqctx, topic_buffer);
     PR_DEBUG("MQTT unsubscribe %s result:%d", topic_buffer, ret);
 
@@ -288,7 +301,7 @@ int matop_serice_destory(matop_context_t *context)
     for (current = &context->message_list; *current;) {
         mqtt_atop_message_t *entry = *current;
         *current = entry->next;
-        tal_free((void *)entry);
+        tal_free(entry);
     }
 
     return OPRT_OK;
@@ -313,7 +326,7 @@ int matop_serice_destory(matop_context_t *context)
 int matop_service_request_async(matop_context_t *context, const mqtt_atop_request_t *request,
                                 mqtt_atop_response_cb_t notify_cb, void *user_data)
 {
-    if (NULL == context || NULL == request) {
+    if (NULL == context || NULL == request || NULL == request->api) {
         return OPRT_INVALID_PARM;
     }
 
@@ -335,31 +348,80 @@ int matop_service_request_async(matop_context_t *context, const mqtt_atop_reques
 
     /* request buffer make */
     size_t request_datalen = 0;
-    size_t request_bufferlen = 128 + (request->data ? strlen((char *)request->data) : 0);
+    const char *data_ptr = request->data ? (const char *)request->data : "{}";
+    size_t data_len = request->data ? (request->data_len ? request->data_len : strlen(data_ptr)) : strlen(data_ptr);
+
+    if (data_len > (size_t)INT_MAX) {
+        tal_free(message_handle);
+        return OPRT_INVALID_PARM;
+    }
+
+    int posix_time = tal_time_get_posix();
+    int base_len = snprintf(NULL, 0, "{\"id\":%d,\"a\":\"%s\",\"t\":%d,\"data\":%.*s", message_handle->id,
+                            request->api, posix_time, (int)data_len, data_ptr);
+    if (base_len < 0) {
+        tal_free(message_handle);
+        return OPRT_COM_ERROR;
+    }
+
+    int version_len = 0;
+    if (request->version) {
+        version_len = snprintf(NULL, 0, ",\"v\":\"%s\"", request->version);
+        if (version_len < 0) {
+            tal_free(message_handle);
+            return OPRT_COM_ERROR;
+        }
+    }
+
+    size_t request_bufferlen = (size_t)base_len + (size_t)version_len + 2; /* '}' + '\0' */
+    if (request_bufferlen < (size_t)base_len) {
+        tal_free(message_handle);
+        return OPRT_COM_ERROR;
+    }
+
     char *request_buffer = tal_malloc(request_bufferlen);
     if (request_buffer == NULL) {
         PR_ERR("response_buffer malloc fail");
-        tal_free((void *)message_handle);
+        tal_free(message_handle);
         return OPRT_MALLOC_FAILED;
     }
 
     /* buffer format */
-    request_datalen =
-        snprintf(request_buffer, request_bufferlen, "{\"id\":%d,\"a\":\"%s\",\"t\":%d,\"data\":%s", message_handle->id,
-                 request->api, tal_time_get_posix(), request->data ? ((char *)request->data) : "{}");
-    if (request->version) {
-        request_datalen += snprintf(request_buffer + request_datalen, request_bufferlen - request_datalen,
-                                    ",\"v\":\"%s\"", request->version);
+    int written = snprintf(request_buffer, request_bufferlen, "{\"id\":%d,\"a\":\"%s\",\"t\":%d,\"data\":%.*s",
+                           message_handle->id, request->api, posix_time, (int)data_len, data_ptr);
+    if (written < 0 || (size_t)written >= request_bufferlen) {
+        tal_free(request_buffer);
+        tal_free(message_handle);
+        return OPRT_BUFFER_NOT_ENOUGH;
     }
-    request_datalen += snprintf(request_buffer + request_datalen, request_bufferlen - request_datalen, "}");
+
+    if (request->version) {
+        int more =
+            snprintf(request_buffer + written, request_bufferlen - (size_t)written, ",\"v\":\"%s\"", request->version);
+        if (more < 0 || (size_t)more >= request_bufferlen - (size_t)written) {
+            tal_free(request_buffer);
+            tal_free(message_handle);
+            return OPRT_BUFFER_NOT_ENOUGH;
+        }
+        written += more;
+    }
+
+    if ((size_t)written + 2 > request_bufferlen) {
+        tal_free(request_buffer);
+        tal_free(message_handle);
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
+    request_buffer[written++] = '}';
+    request_buffer[written] = '\0';
+    request_datalen = (size_t)written;
     PR_DEBUG("atop request: %s", request_buffer);
 
     rt = matop_request_send(matop, (const uint8_t *)request_buffer, request_datalen);
-    tal_free((void *)request_buffer);
+    tal_free(request_buffer);
 
     if (rt != OPRT_OK) {
         PR_ERR("mqtt_atop_request_send error:%d", rt);
-        tal_free((void *)message_handle);
+        tal_free(message_handle);
         return rt;
     }
 
@@ -416,7 +478,7 @@ int matop_service_client_reset(matop_context_t *context)
                                          .data_len = buffer_len,
                                      },
                                      NULL, context);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return rt;
 }
 
@@ -462,7 +524,7 @@ int matop_service_version_update(matop_context_t *context, const char *versions)
                                          .data_len = buffer_len,
                                      },
                                      NULL, context);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return rt;
 }
 
@@ -507,7 +569,7 @@ int matop_service_upgrade_status_update(matop_context_t *context, int channel, i
                                          .data_len = buffer_len,
                                      },
                                      NULL, context);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return rt;
 }
 
@@ -552,7 +614,7 @@ int matop_service_upgrade_info_get(matop_context_t *context, int channel, mqtt_a
                                                                   .data_len = buffer_len,
                                                                   .timeout = 10000},
                                      notify_cb, user_data);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return rt;
 }
 
@@ -596,7 +658,7 @@ int matop_service_auto_upgrade_info_get(matop_context_t *context, mqtt_atop_resp
                                          .data_len = buffer_len,
                                      },
                                      notify_cb, user_data);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return rt;
 }
 
@@ -645,7 +707,7 @@ int matop_service_file_download_range(matop_context_t *context, const char *url,
                                                                   .data_len = buffer_len,
                                                                   .timeout = timeout_ms},
                                      notify_cb, user_data);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return rt;
 }
 
@@ -682,7 +744,7 @@ int matop_service_put_rst_log(matop_context_t *context, int reason)
     char *buffer = tal_malloc(UPDATE_VERSION_BUFFER_LEN);
     if (NULL == buffer) {
         PR_ERR("post buffer malloc fail");
-        tal_free((void *)rst_buffer);
+        tal_free(rst_buffer);
         return OPRT_MALLOC_FAILED;
     }
 
@@ -698,8 +760,8 @@ int matop_service_put_rst_log(matop_context_t *context, int reason)
                                          .data_len = buffer_len,
                                      },
                                      NULL, context);
-    tal_free((void *)buffer);
-    tal_free((void *)rst_buffer);
+    tal_free(buffer);
+    tal_free(rst_buffer);
     return rt;
 }
 
@@ -738,15 +800,15 @@ int matop_service_dynamic_cfg_get(matop_context_t *context, HTTP_DYNAMIC_CFG_TYP
 
     switch (type) {
     case HTTP_DYNAMIC_CFG_TZ:
-        snprintf(buffer, MATOP_DEFAULT_BUFFER_LEN, "{\"type\":\"[\\\"timezone\\\"]\",\"t\":%d}", timestamp);
+        snprintf(buffer, MATOP_DEFAULT_BUFFER_LEN, "{\"type\":\"[\\\"timezone\\\"]\",\"t\":%" PRIu32 "}", timestamp);
         break;
     case HTTP_DYNAMIC_CFG_RATERULE:
-        snprintf(buffer, MATOP_DEFAULT_BUFFER_LEN, "{\"type\":\"[\\\"rateRule\\\"]\",\"t\":%d}", timestamp);
+        snprintf(buffer, MATOP_DEFAULT_BUFFER_LEN, "{\"type\":\"[\\\"rateRule\\\"]\",\"t\":%" PRIu32 "}", timestamp);
         break;
     case HTTP_DYNAMIC_CFG_ALL:
     default:
-        snprintf(buffer, MATOP_DEFAULT_BUFFER_LEN, "{\"type\":\"[\\\"timezone\\\",\\\"rateRule\\\"]\",\"t\":%d}",
-                 timestamp);
+        snprintf(buffer, MATOP_DEFAULT_BUFFER_LEN,
+                 "{\"type\":\"[\\\"timezone\\\",\\\"rateRule\\\"]\",\"t\":%" PRIu32 "}", timestamp);
         break;
     }
 
@@ -762,7 +824,7 @@ int matop_service_dynamic_cfg_get(matop_context_t *context, HTTP_DYNAMIC_CFG_TYP
                                          .data_len = buffer_len,
                                      },
                                      notify_cb, user_data);
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return rt;
 }
 
@@ -829,7 +891,7 @@ int matop_service_dynamic_cfg_ack(matop_context_t *context, const char *timezone
                                      },
                                      notify_cb, user_data);
 
-    tal_free((void *)buffer);
+    tal_free(buffer);
     return rt;
 }
 

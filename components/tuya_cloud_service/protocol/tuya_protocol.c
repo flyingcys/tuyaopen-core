@@ -23,6 +23,7 @@
 #include "crc32i.h"
 #include "mix_method.h"
 #include "uni_random.h"
+#include <inttypes.h>
 
 /***********************************************************
 *************************micro define***********************
@@ -81,11 +82,11 @@ static OPERATE_RET __parse_data_with_pv23(const DP_CMD_TYPE_E cmd, const uint8_t
     }
 
     uint32_t seq = 0;
-    memcpy((void *)&seq, (data + PV23_SEQ_OFFSET), sizeof(uint32_t));
+    memcpy(&seq, (data + PV23_SEQ_OFFSET), sizeof(uint32_t));
     seq = UNI_NTOHL(seq);
 
     uint32_t cmd_from = 0;
-    memcpy((void *)&cmd_from, (data + PV23_CMD_FROM_OFFSET), sizeof(uint32_t));
+    memcpy(&cmd_from, (data + PV23_CMD_FROM_OFFSET), sizeof(uint32_t));
     cmd_from = UNI_NTOHL(cmd_from);
 
     // reserve_field must clean zore
@@ -116,7 +117,7 @@ static OPERATE_RET __parse_data_with_pv23(const DP_CMD_TYPE_E cmd, const uint8_t
     if (op_ret != OPRT_OK) {
         PR_ERR("mbedtls_cipher_auth_decrypt_wrapper:0x%x", -op_ret);
         *out_data = NULL;
-        tal_free((void *)ec_data);
+        tal_free(ec_data);
         return op_ret;
     }
 
@@ -132,14 +133,14 @@ static OPERATE_RET __parse_data_with_lpv35(const DP_CMD_TYPE_E cmd, const uint8_
 {
     char pv_buf[4];
     memset(pv_buf, 0, sizeof(pv_buf));
-    memcpy((void *)pv_buf, data + PV_OFFSET_22_32, PV_LEN_22_32);
+    memcpy(pv_buf, data + PV_OFFSET_22_32, PV_LEN_22_32);
 
     uint32_t seq = 0;
-    memcpy((void *)&seq, (data + SEQ_OFFSET_22_32), sizeof(uint32_t));
+    memcpy(&seq, (data + SEQ_OFFSET_22_32), sizeof(uint32_t));
     seq = UNI_NTOHL(seq);
 
     uint32_t cmd_from = 0;
-    memcpy((void *)&cmd_from, (data + CMD_FROM_OFFSET_22_32), sizeof(uint32_t));
+    memcpy(&cmd_from, (data + CMD_FROM_OFFSET_22_32), sizeof(uint32_t));
     cmd_from = UNI_NTOHL(cmd_from);
 
     uint8_t *ec_data = NULL;
@@ -147,7 +148,7 @@ static OPERATE_RET __parse_data_with_lpv35(const DP_CMD_TYPE_E cmd, const uint8_
 
     ec_data = tal_malloc(ec_len + 1);
     TUYA_CHECK_NULL_RETURN(ec_data, OPRT_MALLOC_FAILED);
-    memcpy((void *)ec_data, data + DATA_OFFSET_22_32, ec_len);
+    memcpy(ec_data, data + DATA_OFFSET_22_32, ec_len);
 
     ec_data[ec_len] = 0;
 
@@ -225,6 +226,10 @@ static OPERATE_RET __pack_data_with_cmd_pv23(const DP_CMD_TYPE_E cmd, const char
     char *out = NULL;
     int offset = 0;
 
+    if (pv == NULL || src == NULL || key == NULL || pack_out == NULL || out_len == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
     PR_TRACE("To:%d src:%s pro:%d num:%d", cmd, src, pro, num);
     // make json data
     int len = strlen(src) + 60;
@@ -234,7 +239,18 @@ static OPERATE_RET __pack_data_with_cmd_pv23(const DP_CMD_TYPE_E cmd, const char
         return OPRT_MALLOC_FAILED;
     }
 
-    offset += sprintf(out + offset, "{\"protocol\":%d,\"t\":%d,\"data\":%s", pro, (uint32_t)tal_time_get_posix(), src);
+    int ret = snprintf(out + offset, len - offset, "{\"protocol\":%" PRIu32 ",\"t\":%" PRIu32 ",\"data\":%s", pro,
+                       (uint32_t)tal_time_get_posix(), src);
+    if (ret < 0 || ret >= len - offset) {
+        tal_free(out);
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
+    offset += ret;
+
+    if (offset > len - 2) {
+        tal_free(out);
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
     out[offset++] = '}';
     out[offset] = 0;
 
@@ -243,22 +259,22 @@ static OPERATE_RET __pack_data_with_cmd_pv23(const DP_CMD_TYPE_E cmd, const char
     // make pack data
     uint8_t *buf = tal_malloc(offset + PV23_EXCEPT_DATA_LEN);
     if (buf == NULL) {
-        tal_free((void *)out);
+        tal_free(out);
         return OPRT_MALLOC_FAILED;
     }
     memset(buf, 0, offset + PV23_EXCEPT_DATA_LEN);
 
     // make head data
     // version
-    memcpy((void *)buf + PV23_VERSION_OFFSET, pv, PV_LEN_22_32);
+    memcpy(buf + PV23_VERSION_OFFSET, pv, PV_LEN_22_32);
 
     // seq
     uint32_t tmp = UNI_HTONL(num);
-    memcpy((void *)buf + PV23_SEQ_OFFSET, (uint8_t *)(&tmp), sizeof(uint32_t));
+    memcpy(buf + PV23_SEQ_OFFSET, (uint8_t *)(&tmp), sizeof(uint32_t));
 
     // cmd from
     tmp = UNI_HTONL(0x00000001);
-    memcpy((void *)buf + PV23_CMD_FROM_OFFSET, (uint8_t *)(&tmp), sizeof(uint32_t));
+    memcpy(buf + PV23_CMD_FROM_OFFSET, (uint8_t *)(&tmp), sizeof(uint32_t));
 
     // reserve
     memset(buf + PV23_RESERVE_OFFSET, 0, 1);
@@ -279,10 +295,10 @@ static OPERATE_RET __pack_data_with_cmd_pv23(const DP_CMD_TYPE_E cmd, const char
                                                                           .data_len = strlen(out)},
                                                  buf + PV23_DATA_OFFSET, &encrypt_olen, buf + PV23_DATA_OFFSET + offset,
                                                  PV23_TAG_LEN);
-    tal_free((void *)out);
+    tal_free(out);
     if (op_ret != OPRT_OK) {
         PR_ERR("mbedtls_cipher_auth_encrypt_wrapper:0x%x", -op_ret);
-        tal_free((void *)buf);
+        tal_free(buf);
         return op_ret;
     }
 
@@ -299,6 +315,10 @@ static OPERATE_RET __pack_data_with_cmd_lpv35(const DP_CMD_TYPE_E cmd, const cha
     char *out = NULL;
     int offset = 0;
 
+    if (pv == NULL || src == NULL || key == NULL || pack_out == NULL || out_len == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
     PR_TRACE("To:%d src:%s pro:%d num:%d", cmd, src, pro, num);
 
     // make json data
@@ -309,7 +329,18 @@ static OPERATE_RET __pack_data_with_cmd_lpv35(const DP_CMD_TYPE_E cmd, const cha
         return OPRT_MALLOC_FAILED;
     }
 
-    offset += sprintf(out + offset, "{\"protocol\":%d,\"t\":%d,\"data\":%s", pro, (uint32_t)tal_time_get_posix(), src);
+    int ret = snprintf(out + offset, len - offset, "{\"protocol\":%" PRIu32 ",\"t\":%" PRIu32 ",\"data\":%s", pro,
+                       (uint32_t)tal_time_get_posix(), src);
+    if (ret < 0 || ret >= len - offset) {
+        tal_free(out);
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
+    offset += ret;
+
+    if (offset > len - 2) {
+        tal_free(out);
+        return OPRT_BUFFER_NOT_ENOUGH;
+    }
     out[offset++] = '}';
     out[offset] = 0;
 
@@ -318,29 +349,29 @@ static OPERATE_RET __pack_data_with_cmd_lpv35(const DP_CMD_TYPE_E cmd, const cha
     // make pack data
     uint8_t *buf = tal_malloc(DATA_OFFSET_22_32 + offset + 16);
     if (buf == NULL) {
-        tal_free((void *)out);
+        tal_free(out);
         return OPRT_MALLOC_FAILED;
     }
     memset(buf, 0, DATA_OFFSET_22_32 + offset + 16);
 
     // not aes data
-    memcpy((void *)buf + DATA_OFFSET_22_32, out, offset);
-    tal_free((void *)out);
+    memcpy(buf + DATA_OFFSET_22_32, out, offset);
+    tal_free(out);
 
     *pack_out = buf;
     *out_len = (DATA_OFFSET_22_32 + offset);
 
     // make head data
-    memcpy((void *)buf + PV_OFFSET_22_32, pv, PV_LEN_22_32);
+    memcpy(buf + PV_OFFSET_22_32, pv, PV_LEN_22_32);
 
     uint32_t tmp = UNI_HTONL(0x00000000);
-    memcpy((void *)buf + CRC_OFFSET_22_32, (uint8_t *)(&tmp), sizeof(uint32_t));
+    memcpy(buf + CRC_OFFSET_22_32, (uint8_t *)(&tmp), sizeof(uint32_t));
 
     tmp = UNI_HTONL(num);
-    memcpy((void *)buf + SEQ_OFFSET_22_32, (uint8_t *)(&tmp), sizeof(uint32_t));
+    memcpy(buf + SEQ_OFFSET_22_32, (uint8_t *)(&tmp), sizeof(uint32_t));
 
     tmp = UNI_HTONL(0x00000001);
-    memcpy((void *)buf + CMD_FROM_OFFSET_22_32, (uint8_t *)(&tmp), sizeof(uint32_t));
+    memcpy(buf + CMD_FROM_OFFSET_22_32, (uint8_t *)(&tmp), sizeof(uint32_t));
 
     return OPRT_OK;
 }
@@ -448,7 +479,7 @@ OPERATE_RET lpv35_frame_serialize(const uint8_t *key, int key_len, const lpv35_f
     int offset = 0;
 
     // HEAD
-    memcpy((void *)output, LPV35_FRAME_HEAD, LPV35_FRAME_HEAD_SIZE);
+    memcpy(output, LPV35_FRAME_HEAD, LPV35_FRAME_HEAD_SIZE);
     offset += LPV35_FRAME_HEAD_SIZE;
 
     // AD
@@ -456,7 +487,7 @@ OPERATE_RET lpv35_frame_serialize(const uint8_t *key, int key_len, const lpv35_f
                                   .sequence = UNI_HTONL(input->sequence),
                                   .type = UNI_HTONL(input->type),
                                   .length = UNI_HTONL(LPV35_FRAME_NONCE_SIZE + input->data_len + LPV35_FRAME_TAG_SIZE)};
-    memcpy((void *)output + offset, (uint8_t *)&ad, sizeof(lpv35_additional_data_t));
+    memcpy(output + offset, (uint8_t *)&ad, sizeof(lpv35_additional_data_t));
     offset += sizeof(lpv35_additional_data_t);
 
     //  tmp nonce
@@ -465,7 +496,7 @@ OPERATE_RET lpv35_frame_serialize(const uint8_t *key, int key_len, const lpv35_f
     for (i = 0; i < LPV35_FRAME_NONCE_SIZE; i++) {
         nonce[i] = uni_random_range(0xFF);
     }
-    memcpy((void *)output + offset, &(nonce[0]), LPV35_FRAME_NONCE_SIZE);
+    memcpy(output + offset, &(nonce[0]), LPV35_FRAME_NONCE_SIZE);
     offset += LPV35_FRAME_NONCE_SIZE;
 
     // TAG buffer
@@ -490,11 +521,11 @@ OPERATE_RET lpv35_frame_serialize(const uint8_t *key, int key_len, const lpv35_f
     offset += encrypt_olen;
 
     // TAG
-    memcpy((void *)output + offset, tag, LPV35_FRAME_TAG_SIZE);
+    memcpy(output + offset, tag, LPV35_FRAME_TAG_SIZE);
     offset += LPV35_FRAME_TAG_SIZE;
 
     // TAIL
-    memcpy((void *)output + offset, LPV35_FRAME_TAIL, LPV35_FRAME_TAIL_SIZE);
+    memcpy(output + offset, LPV35_FRAME_TAIL, LPV35_FRAME_TAIL_SIZE);
     offset += LPV35_FRAME_TAIL_SIZE;
     *olen = offset;
 
@@ -550,20 +581,20 @@ OPERATE_RET lpv35_frame_parse(const uint8_t *key, int key_len, const uint8_t *in
     offset += LPV35_FRAME_RESERVE_SIZE;
 
     // sequence
-    memcpy((void *)&output->sequence, input + offset, LPV35_FRAME_SEQUENCE_SIZE);
+    memcpy(&output->sequence, input + offset, LPV35_FRAME_SEQUENCE_SIZE);
     output->sequence = UNI_HTONL(output->sequence);
     // PR_DEBUG("sequence:0x%x", output->sequence);
     offset += LPV35_FRAME_SEQUENCE_SIZE;
 
     // type
-    memcpy((void *)&output->type, input + offset, LPV35_FRAME_TYPE_SIZE);
+    memcpy(&output->type, input + offset, LPV35_FRAME_TYPE_SIZE);
     output->type = UNI_HTONL(output->type);
     // PR_DEBUG("type:0x%x", output->type);
     offset += LPV35_FRAME_TYPE_SIZE;
 
     // length
     uint32_t length = 0;
-    memcpy((void *)&length, input + offset, LPV35_FRAME_DATALEN_SIZE);
+    memcpy(&length, input + offset, LPV35_FRAME_DATALEN_SIZE);
     length = UNI_HTONL(length);
     // PR_DEBUG("length:%d", length);
     offset += LPV35_FRAME_DATALEN_SIZE;
@@ -576,7 +607,7 @@ OPERATE_RET lpv35_frame_parse(const uint8_t *key, int key_len, const uint8_t *in
 
     // nonce
     uint8_t nonce[LPV35_FRAME_NONCE_SIZE];
-    memcpy((void *)nonce, input + offset, LPV35_FRAME_NONCE_SIZE);
+    memcpy(nonce, input + offset, LPV35_FRAME_NONCE_SIZE);
     // tuya_debug_hex_dump("nonce", LPV35_FRAME_NONCE_SIZE, nonce,
     // LPV35_FRAME_NONCE_SIZE);
     offset += LPV35_FRAME_NONCE_SIZE;
@@ -588,11 +619,11 @@ OPERATE_RET lpv35_frame_parse(const uint8_t *key, int key_len, const uint8_t *in
 
     // tag
     uint8_t tag[LPV35_FRAME_TAG_SIZE];
-    memcpy((void *)tag, input + offset, LPV35_FRAME_TAG_SIZE);
+    memcpy(tag, input + offset, LPV35_FRAME_TAG_SIZE);
 
     // AD
     lpv35_additional_data_t ad;
-    memcpy((void *)&ad, input + LPV35_FRAME_HEAD_SIZE, sizeof(lpv35_additional_data_t));
+    memcpy(&ad, input + LPV35_FRAME_HEAD_SIZE, sizeof(lpv35_additional_data_t));
 
     // decrypt data
     output->data = tal_malloc(output->data_len + 1);
@@ -611,7 +642,7 @@ OPERATE_RET lpv35_frame_parse(const uint8_t *key, int key_len, const uint8_t *in
                                                  output->data, &decrypt_olen, tag, LPV35_FRAME_TAG_SIZE);
     if (op_ret != OPRT_OK) {
         PR_ERR("mbedtls_cipher_auth_decrypt_wrapper:0x%x", -op_ret);
-        tal_free((void *)output->data);
+        tal_free(output->data);
         output->data = NULL;
         return op_ret;
     }

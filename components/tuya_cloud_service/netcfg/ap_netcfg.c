@@ -24,6 +24,7 @@
 #include "tal_wifi.h"
 #include "tal_network.h"
 #include "tuya_iot.h"
+#include "tuya_lan.h"
 #include "tuya_register_center.h"
 
 #define AP_BROADCAST_PORT       6667
@@ -77,7 +78,7 @@ ap_netcfg_t *ap_netcfg_get(void)
 void ap_netcfg_free(void)
 {
     if (s_ap_netcfg) {
-        tal_free((void *)s_ap_netcfg);
+        tal_free(s_ap_netcfg);
         s_ap_netcfg = NULL;
     }
 }
@@ -104,7 +105,7 @@ static void ap_app_key_make(uint8_t *app_key)
     app_key[15] = 'O';
 
     tal_md5_ret(app_key, APP_KEY_LEN, app_key_encode);
-    memcpy((void *)app_key, app_key_encode, APP_KEY_LEN);
+    memcpy(app_key, app_key_encode, APP_KEY_LEN);
 }
 
 static int ap_dev_config_make(ap_netcfg_t *ap, char **buf)
@@ -127,11 +128,22 @@ static int ap_dev_config_make(ap_netcfg_t *ap, char **buf)
     }
 
     uint32_t offset = 0;
-    offset += sprintf(json_buf + offset, "{\"ip\":\"%s\", \"uuid\":\"%s\", \"active\":0", ip.ip, ap->netcfg_args.uuid);
-    offset += sprintf(json_buf + offset, ",\"version\":\"%s\"", TUYA_LPV35);
-    offset += sprintf(json_buf + offset, ",\"sl\":%d", TUYA_SECURITY_LEVEL);
-    offset += sprintf(json_buf + offset, ",\"apConfigType\":1");
-    offset += sprintf(json_buf + offset, ",\"CombosFlag\":%d", (1 << 3));
+    int ret = 0;
+    ret = snprintf(json_buf + offset, 256 - offset, "{\"ip\":\"%s\", \"uuid\":\"%s\", \"active\":0", ip.ip, ap->netcfg_args.uuid);
+    if (ret < 0 || ret >= 256 - offset) return OPRT_BUFFER_NOT_ENOUGH;
+    offset += ret;
+    ret = snprintf(json_buf + offset, 256 - offset, ",\"version\":\"%s\"", TUYA_LPV35);
+    if (ret < 0 || ret >= 256 - offset) return OPRT_BUFFER_NOT_ENOUGH;
+    offset += ret;
+    ret = snprintf(json_buf + offset, 256 - offset, ",\"sl\":%d", TUYA_SECURITY_LEVEL);
+    if (ret < 0 || ret >= 256 - offset) return OPRT_BUFFER_NOT_ENOUGH;
+    offset += ret;
+    ret = snprintf(json_buf + offset, 256 - offset, ",\"apConfigType\":1");
+    if (ret < 0 || ret >= 256 - offset) return OPRT_BUFFER_NOT_ENOUGH;
+    offset += ret;
+    ret = snprintf(json_buf + offset, 256 - offset, ",\"CombosFlag\":%d", (1 << 3));
+    if (ret < 0 || ret >= 256 - offset) return OPRT_BUFFER_NOT_ENOUGH;
+    offset += ret;
 
     json_buf[offset] = '}';
     json_buf[offset + 1] = 0;
@@ -158,12 +170,12 @@ static void ap_broadcast_timeout(TIMER_ID timerID, void *pTimerArg)
     lpv35_plaintext_data_t *plaintext_data = tal_malloc(plaintext_len);
     if (plaintext_data == NULL) {
         PR_ERR("plaintext_data fail");
-        tal_free((void *)json_buf);
+        tal_free(json_buf);
         return;
     }
     plaintext_data->ret_code = 0;
-    memcpy((void *)plaintext_data->data, json_buf, strlen(json_buf));
-    tal_free((void *)json_buf);
+    memcpy(plaintext_data->data, json_buf, strlen(json_buf));
+    tal_free(json_buf);
     // lpv3.5 test arch
     lpv35_frame_object_t frame = {
         .sequence = 0,
@@ -175,14 +187,14 @@ static void ap_broadcast_timeout(TIMER_ID timerID, void *pTimerArg)
     uint8_t *send_buf = (uint8_t *)tal_malloc(lpv35_frame_buffer_size_get(&frame));
     if (send_buf == NULL) {
         PR_ERR("send_buf malloc fail");
-        tal_free((void *)plaintext_data);
+        tal_free(plaintext_data);
         return;
     }
     op_ret = lpv35_frame_serialize(ap->app_key, APP_KEY_LEN, &frame, send_buf, (int *)&olen);
-    tal_free((void *)plaintext_data);
+    tal_free(plaintext_data);
     if (op_ret != OPRT_OK) {
         PR_ERR("lpv35_frame_serialize fail:%d", op_ret);
-        tal_free((void *)send_buf);
+        tal_free(send_buf);
         return;
     }
 
@@ -191,7 +203,7 @@ static void ap_broadcast_timeout(TIMER_ID timerID, void *pTimerArg)
         PR_ERR("sendto broadcast Failed,len:%d ret:%d,errno:%d", olen, op_ret, tal_net_get_errno());
     }
 
-    tal_free((void *)send_buf);
+    tal_free(send_buf);
 }
 
 static int ap_cfg_cmd_patse(ap_netcfg_t *ap, char *data)
@@ -204,48 +216,73 @@ static int ap_cfg_cmd_patse(ap_netcfg_t *ap, char *data)
         return OPRT_CJSON_GET_ERR;
     }
 
-    if (NULL == (cJSON_GetObjectItem(root, "ssid"))) {
+    cJSON *ssid_item = cJSON_GetObjectItem(root, "ssid");
+    if (!cJSON_IsString(ssid_item) || ssid_item->valuestring == NULL || ssid_item->valuestring[0] == '\0') {
         PR_ERR("data format err:%s", data);
         cJSON_Delete(root);
         return OPRT_CJSON_GET_ERR;
     }
-
-    char *ssid = cJSON_GetObjectItem(root, "ssid")->valuestring;
-    if (strlen(ssid) == 0) {
-        cJSON_Delete(root);
-        return OPRT_CJSON_GET_ERR;
-    }
+    const char *ssid = ssid_item->valuestring;
     PR_DEBUG("Parse ssid:%s", ssid);
 
     char *token = NULL;
-    if ((cJSON_GetObjectItem(root, "token") && (cJSON_GetObjectItem(root, "token")->valuestring[0]))) {
-        token = cJSON_GetObjectItem(root, "token")->valuestring;
+    cJSON *token_item = cJSON_GetObjectItem(root, "token");
+    if (cJSON_IsString(token_item) && token_item->valuestring && token_item->valuestring[0]) {
+        token = token_item->valuestring;
         PR_DEBUG("Parse token:%s", token);
     }
 
     char *passwd = NULL;
-    if ((cJSON_GetObjectItem(root, "passwd") && (cJSON_GetObjectItem(root, "passwd")->valuestring[0]))) {
-        passwd = cJSON_GetObjectItem(root, "passwd")->valuestring;
-        PR_DEBUG("Parse passwd:%s", passwd);
+    cJSON *passwd_item = cJSON_GetObjectItem(root, "passwd");
+    if (cJSON_IsString(passwd_item) && passwd_item->valuestring && passwd_item->valuestring[0]) {
+        passwd = passwd_item->valuestring;
     }
-    strncpy((char *)ap->netcfg_info.ssid, ssid, WIFI_SSID_LEN);
-    ap->netcfg_info.s_len = strlen(ssid);
+
+    memset(&ap->netcfg_info, 0, sizeof(ap->netcfg_info));
+
+    // Copy SSID
+    size_t s_len = strnlen(ssid, WIFI_SSID_LEN + 1);
+    if (s_len == 0 || s_len > WIFI_SSID_LEN) {
+        PR_ERR("ssid len invalid:%zu", s_len);
+        cJSON_Delete(root);
+        return OPRT_CJSON_GET_ERR;
+    }
+    memcpy(ap->netcfg_info.ssid, ssid, s_len);
+    ap->netcfg_info.ssid[s_len] = '\0';
+    ap->netcfg_info.s_len = (uint8_t)s_len;
+
     if (passwd == NULL) {
         ap->netcfg_info.p_len = 0;
     } else {
-        strncpy((char *)ap->netcfg_info.passwd, passwd, WIFI_PASSWD_LEN);
-        ap->netcfg_info.p_len = strlen(passwd);
+        // Copy password
+        size_t p_len = strnlen(passwd, WIFI_PASSWD_LEN + 1);
+        if (p_len == 0 || p_len > WIFI_PASSWD_LEN) {
+            PR_ERR("passwd len invalid:%zu", p_len);
+            cJSON_Delete(root);
+            return OPRT_CJSON_GET_ERR;
+        }
+        memcpy(ap->netcfg_info.passwd, passwd, p_len);
+        ap->netcfg_info.passwd[p_len] = '\0';
+        ap->netcfg_info.p_len = (uint8_t)p_len;
     }
 
     if (token) {
-        strncpy((char *)ap->netcfg_info.token, token, WL_TOKEN_LEN);
-        ap->netcfg_info.t_len = strlen(token);
+        // Copy token
+        size_t t_len = strnlen(token, WL_TOKEN_LEN + 1);
+        if (t_len == 0 || t_len > WL_TOKEN_LEN) {
+            PR_ERR("token len invalid:%zu", t_len);
+            cJSON_Delete(root);
+            return OPRT_CJSON_GET_ERR;
+        }
+        memcpy(ap->netcfg_info.token, token, t_len);
+        ap->netcfg_info.token[t_len] = '\0';
+        ap->netcfg_info.t_len = (uint8_t)t_len;
     }
 
     cJSON *reg = cJSON_GetObjectItem(root, "reg");
     if (reg) {
         char *app_reg = cJSON_PrintUnformatted(reg);
-        tal_free((void *)app_reg);
+        cJSON_free(app_reg);
         if (OPRT_OK != tuya_register_center_save(RCS_APP, reg)) {
             PR_ERR("save to reg center err");
         }
@@ -268,10 +305,25 @@ static int ap_setup_tls_serv(ap_netcfg_t *ap)
         ret = fd;
         goto __exit;
     }
+
     ret = tal_net_set_reuse(fd);
-    ret |= tal_net_bind(fd, ap->serv_ip, ap->is_psk_pincode ? AP_TLS_PSK_PINCODE_PORT : AP_TLS_PSK_PORT);
-    ret |= tal_net_listen(fd, 1);
     if (OPRT_OK != ret) {
+        PR_ERR("ap set reuse fail:%d", tal_net_get_errno());
+        ret = OPRT_SOCK_ERR;
+        goto __exit;
+    }
+
+    int bind_port = ap->is_psk_pincode ? AP_TLS_PSK_PINCODE_PORT : AP_TLS_PSK_PORT;
+    PR_DEBUG("ap try bind port:%d", bind_port);
+    ret = tal_net_bind(fd, ap->serv_ip, bind_port);
+    if (OPRT_OK != ret) {
+        PR_ERR("ap bind fail:%d", tal_net_get_errno());
+        ret = OPRT_SOCK_ERR;
+        goto __exit;
+    }
+    ret = tal_net_listen(fd, 1);
+    if (OPRT_OK != ret) {
+        PR_ERR("ap listen fail:%d", tal_net_get_errno());
         ret = OPRT_SOCK_ERR;
         goto __exit;
     }
@@ -301,8 +353,7 @@ static int ap_tls_psk_set(ap_netcfg_t *ap)
             PR_ERR("psk cacl error");
             return OPRT_COM_ERROR;
         }
-        PR_DEBUG("ap->netcfg_args.pincode %s", ap->netcfg_args.pincode);
-        PR_HEXDUMP_NOTICE("psk", ap->tls_psk, AP_TLS_PSK_LEN);
+
         tuya_tls_config_set(ap->tls_hander, &(tuya_tls_config_t){.mode = TUYA_TLS_PSK_MODE,
                                                                  .psk_key = (char *)ap->tls_psk,
                                                                  .psk_key_size = AP_TLS_PSK_LEN,
@@ -333,7 +384,7 @@ static int ap_send(ap_netcfg_t *ap, uint32_t frame_type, uint32_t ret_code, uint
 
     plaintext_data->ret_code = ret_code;
     if (p_data != NULL) {
-        memcpy((void *)plaintext_data->data, p_data, data_len);
+        memcpy(plaintext_data->data, p_data, data_len);
     }
 
     // lpv3.5 test arch
@@ -354,7 +405,7 @@ static int ap_send(ap_netcfg_t *ap, uint32_t frame_type, uint32_t ret_code, uint
     op_ret = lpv35_frame_serialize(ap->app_key, APP_KEY_LEN, &frame, send_buf, (int *)&olen);
     if (op_ret != OPRT_OK) {
         PR_ERR("lpv35_frame_serialize fail:%d", op_ret);
-        tal_free((void *)send_buf);
+        tal_free(send_buf);
         return OPRT_COM_ERROR;
     }
 
@@ -364,7 +415,7 @@ static int ap_send(ap_netcfg_t *ap, uint32_t frame_type, uint32_t ret_code, uint
     }
 
     PR_TRACE("tls write :%d", op_ret);
-    tal_free((void *)send_buf);
+    tal_free(send_buf);
     return OPRT_OK;
 }
 
@@ -383,12 +434,14 @@ static int ap_get_wifi_list(char *wifi_list, uint16_t wifi_list_size, uint16_t m
     if ((OPRT_OK != ret) || (ap_num == 0)) {
         PR_DEBUG("scan ap null:%d %d", ret, ap_num);
 
-        sprintf(wifi_list + offset, "{\"wifi_list\":[]}");
+        snprintf(wifi_list + offset, wifi_list_size - offset, "{\"wifi_list\":[]}");
         return OPRT_OK;
     }
 
     // Sort and get the max cnt data with the strongest signal
-    offset += sprintf(wifi_list + offset, "{\"wifi_list\":[");
+    int n = snprintf(wifi_list + offset, wifi_list_size - offset, "{\"wifi_list\":[");
+    if (n < 0 || n >= wifi_list_size - offset) return OPRT_BUFFER_NOT_ENOUGH;
+    offset += n;
     max_cnt = (max_cnt > ap_num) ? ap_num : max_cnt;
     for (loop = 0; loop < max_cnt; loop++) {
         if (0 == strlen((char *)ap_if[loop].ssid)) {
@@ -398,13 +451,19 @@ static int ap_get_wifi_list(char *wifi_list, uint16_t wifi_list_size, uint16_t m
             break;
         }
         if (!first_ap) {
-            offset += sprintf(wifi_list + offset, ",");
+            n = snprintf(wifi_list + offset, wifi_list_size - offset, ",");
+            if (n < 0 || n >= wifi_list_size - offset) break;
+            offset += n;
         }
-        offset += sprintf(wifi_list + offset, "{\"ssid\":\"%s\",\"rssi\":%d,\"sec\":%u}", ap_if[loop].ssid,
+        n = snprintf(wifi_list + offset, wifi_list_size - offset, "{\"ssid\":\"%s\",\"rssi\":%d,\"sec\":%u}", ap_if[loop].ssid,
                           ap_if[loop].rssi, ap_if[loop].security);
+        if (n < 0 || n >= wifi_list_size - offset) break;
+        offset += n;
         first_ap = FALSE;
     }
-    offset += sprintf(wifi_list + offset, "]}");
+    n = snprintf(wifi_list + offset, wifi_list_size - offset, "]}");
+    if (n < 0 || n >= wifi_list_size - offset) return OPRT_BUFFER_NOT_ENOUGH;
+    offset += n;
     tal_wifi_release_ap(ap_if);
 
     return ret;
@@ -439,8 +498,8 @@ static int ap_ext_cmd_parse(ap_netcfg_t *ap, char *data)
         if (OPRT_OK != rt) {
             goto __exit;
         }
-        sprintf(buffer, "{\"reqType\":\"query_dev_rpt\",\"data\":%s}", data);
-        tal_free((void *)data);
+        snprintf(buffer, buffer_size, "{\"reqType\":\"query_dev_rpt\",\"data\":%s}", data);
+        tal_free(data);
     } else if (0 == strcmp(reqtype->valuestring, "get_wifi_list")) {
         cJSON *jdata = cJSON_GetObjectItem(root, "data");
         if (NULL == jdata) {
@@ -452,13 +511,24 @@ static int ap_ext_cmd_parse(ap_netcfg_t *ap, char *data)
             rt = OPRT_CJSON_GET_ERR;
             goto __exit;
         }
-        uint16_t offset = sprintf(buffer, "{\"reqType\":\"wifi_list_rpt\",\"data\":");
+        int16_t offset = snprintf(buffer, buffer_size, "{\"reqType\":\"wifi_list_rpt\",\"data\":");
+        if (offset < 0 || offset >= buffer_size) {
+            rt = OPRT_BUFFER_NOT_ENOUGH;
+            goto __exit;
+        }
         TUYA_CALL_ERR_GOTO(ap_get_wifi_list(buffer + offset, buffer_size - offset, item->valueint), __exit);
-        strcpy(buffer + strlen(buffer), "}");
+        size_t cur_len = strlen(buffer);
+        if (cur_len + 2 < buffer_size) {
+            buffer[cur_len] = '}';
+            buffer[cur_len + 1] = '\0';
+        } else {
+            rt = OPRT_BUFFER_NOT_ENOUGH;
+            goto __exit;
+        }
     } else if (0 == strcmp(reqtype->valuestring,
                            "query_netcfg_stat")) { //  query_netcfg_stat
         char *out = "{\"type\":1,\"stage\":2,\"status\":0}";
-        sprintf(buffer, "{\"reqType\":\"netcfg_stat_rpt\",\"data\":%s}", out);
+        snprintf(buffer, buffer_size, "{\"reqType\":\"netcfg_stat_rpt\",\"data\":%s}", out);
     } else {
         PR_DEBUG("not support reqtype:%s", reqtype->valuestring);
         memset(buffer, 0, buffer_size);
@@ -474,7 +544,7 @@ __exit:
     }
 
     if (buffer) {
-        tal_free((void *)buffer);
+        tal_free(buffer);
     }
 
     return rt;
@@ -718,7 +788,7 @@ static void ap_netcfg_thread(void *args)
                 } else if (frame_object.type == AP_CFG_EXT_CMD) {
                     ap_ext_cmd_parse(ap, (char *)frame_object.data);
                 }
-                tal_free((void *)frame_object.data);
+                tal_free(frame_object.data);
             }
         } break;
 
@@ -752,11 +822,14 @@ static int ap_mode_start(ap_netcfg_t *ap)
         return op_ret;
     }
     //! default ip info
-    strcpy(ap_cfg.ip.ip, "192.168.176.1");
-    strcpy(ap_cfg.ip.gw, "192.168.176.1");
-    strcpy(ap_cfg.ip.mask, "255.255.255.0");
+    strncpy(ap_cfg.ip.ip, "192.168.176.1", sizeof(ap_cfg.ip.ip) - 1);
+    ap_cfg.ip.ip[sizeof(ap_cfg.ip.ip) - 1] = '\0';
+    strncpy(ap_cfg.ip.gw, "192.168.176.1", sizeof(ap_cfg.ip.gw) - 1);
+    ap_cfg.ip.gw[sizeof(ap_cfg.ip.gw) - 1] = '\0';
+    strncpy(ap_cfg.ip.mask, "255.255.255.0", sizeof(ap_cfg.ip.mask) - 1);
+    ap_cfg.ip.mask[sizeof(ap_cfg.ip.mask) - 1] = '\0';
     //! default ssid
-    sprintf((char *)ap_cfg.ssid, "%s-%02X%02X", TUYA_AP_SSID_DEFAULT, mac.mac[4], mac.mac[5]);
+    snprintf((char *)ap_cfg.ssid, sizeof(ap_cfg.ssid), "%s-%02X%02X", TUYA_AP_SSID_DEFAULT, mac.mac[4], mac.mac[5]);
     ap_cfg.s_len = strlen((char *)ap_cfg.ssid);
     ap_cfg.md = WAAM_OPEN;
     ap_cfg.chan = 6;
@@ -786,6 +859,8 @@ static int ap_netcfg_start(int type, netcfg_finish_cb_t cb, void *args)
         PR_ERR("ap mgr or netcfg_finish_cb NULL");
         return OPRT_MALLOC_FAILED;
     }
+
+    tuya_lan_disable();
 
     op_ret = ap_mode_start(ap);
     if (OPRT_OK != op_ret) {
@@ -860,6 +935,9 @@ static int ap_netcfg_stop(int type)
     TUYA_CALL_ERR_LOG(tal_wifi_set_work_mode(WWM_STATION));
     ap_netcfg_t *ap = ap_netcfg_get();
     if (ap) {
+        if (ap->broadcast_timer) {
+            tal_sw_timer_stop(ap->broadcast_timer);
+        }
         ap->thread_exit_flag = TRUE;
     }
 
@@ -887,7 +965,7 @@ int ap_netcfg_init(netcfg_args_t *netcfg_args)
 
     TUYA_CHECK_NULL_RETURN(s_ap_netcfg = tal_malloc(sizeof(ap_netcfg_t)), OPRT_MALLOC_FAILED);
     memset(s_ap_netcfg, 0, sizeof(ap_netcfg_t));
-    memcpy((void *)&s_ap_netcfg->netcfg_args, netcfg_args, sizeof(netcfg_args_t));
+    memcpy(&s_ap_netcfg->netcfg_args, netcfg_args, sizeof(netcfg_args_t));
 
     return netcfg_register(NETCFG_TUYA_WIFI_AP, ap_netcfg_start, ap_netcfg_stop);
 }
